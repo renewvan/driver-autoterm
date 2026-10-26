@@ -3,3 +3,4 @@
 .pytest_cache/
 /config.ini
 /state/
+__pycache__/

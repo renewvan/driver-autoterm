@@ -33,11 +33,13 @@ class MqttConfig:
 @dataclass(frozen=True)
 class DeviceConfig:
     id: str  # topic path segment, e.g. renewvan/heater/<id>/...
+    name: str  # empty = not published
     update_interval_ms: int
-    # TODO: add Heater-specific fields here (e.g. serial port,
-    # baud rate, I2C address, remote feed host) -- see driver-tank's
-    # TankConfig for the shape of a hardware-backed device, or
-    # driver-venus's config for a feed-remap device.
+    serial_device: str
+    reply_timeout_s: float
+    commands_enabled: bool
+    stale_after_s: float
+    send_init: bool
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,7 @@ def load_config(
     mqtt = parser["mqtt"]
     device = parser["device"]
 
-    return AppConfig(
+    config = AppConfig(
         mqtt=MqttConfig(
             host=mqtt.get("host", "localhost"),
             port=mqtt.getint("port", 1883),
@@ -71,7 +73,35 @@ def load_config(
             reconnect_max_delay=mqtt.getfloat("reconnect_max_delay", 30.0),
         ),
         device=DeviceConfig(
-            id=device.get("id", "heater"),
-            update_interval_ms=device.getint("update_interval_ms", 3000),
+            id=device.get("id", "heater_01"),
+            name=device.get("name", "Heater"),
+            update_interval_ms=device.getint("update_interval_ms", 1000),
+            serial_device=device.get("serial_device", "/dev/ttyAUTOTERM"),
+            reply_timeout_s=device.getfloat("reply_timeout_s", 1.0),
+            # getboolean raises on a typo: better a stopped Driver than a guess.
+            commands_enabled=device.getboolean("commands_enabled", False),
+            stale_after_s=device.getfloat("stale_after_s", 5.0),
+            send_init=device.getboolean("send_init", True),
         ),
     )
+    _validate(config.device)
+    return config
+
+
+def _validate(device: DeviceConfig) -> None:
+    if device.stale_after_s * 1000 < 3 * device.update_interval_ms:
+        raise ValueError(
+            "stale_after_s must be at least 3 x update_interval_ms "
+            f"({device.stale_after_s} s vs {device.update_interval_ms} ms)"
+        )
+    if device.reply_timeout_s * 1000 > device.update_interval_ms:
+        raise ValueError(
+            "reply_timeout_s must not exceed update_interval_ms "
+            f"({device.reply_timeout_s} s vs {device.update_interval_ms} ms)"
+        )
+    if device.update_interval_ms > 2000:
+        logger.warning(
+            "update_interval_ms is %s: the heater may raise a no-communication fault "
+            "when it is polled less often than every 2 s",
+            device.update_interval_ms,
+        )

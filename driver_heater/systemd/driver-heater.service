@@ -10,6 +10,7 @@ ExecStart=/opt/driver-heater/.venv/bin/python -m driver_heater.main --config /op
 Restart=on-failure
 RestartSec=5
 User=renewvan
+SupplementaryGroups=dialout
 
 [Install]
 WantedBy=multi-user.target

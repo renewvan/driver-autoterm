@@ -6,3 +6,11 @@
 
 [mqtt]
 host = 192.168.1.10
+
+[device]
+id = heater_01
+name = Heater
+serial_device = /dev/ttyAUTOTERM
+; WARNING: the broker accepts anonymous clients. With this true, anyone who can
+; reach it can start and stop the heater. Keep the broker on the van's own network.
+commands_enabled = false

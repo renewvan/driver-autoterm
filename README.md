@@ -2,48 +2,68 @@
 
 Autoterm AIR 2D diesel heater driver for the renewvan hub (serial UART to MQTT)
 
-Scaffolded from `renewvan/driver-tank`'s reference shape via `renewvan/skills`'
-`scaffold-driver` skill (per the **Device** term in `hub/docs/architecture.md`'s
-Terminology section: "anything that publishes one specific device or feed
-onto the renewvan bus, normalized into the device model"). Layout: pure,
-unit-testable conversion math with no I/O, a layered
-`config.default.ini`/`config.ini` loader (`config.py`), a persistent MQTT
-publisher with LWT (`publisher.py`), a thin publish loop (`driver.py`), a
-systemd unit, and its own Dockerfile + CI publishing a versioned image.
+Native MQTT **Driver** for an Autoterm AIR 2D diesel heater. It reads the heater over a
+9600 8N1 UART (`/dev/ttyAUTOTERM`), publishes the `heater` Entity
+(`hub/schema/heater.schema.json`), and, only when `commands_enabled = true`, accepts six command
+topics under the safety rules of `hub/docs/adr/0021-writable-heater-and-its-command-safety-rules.md`.
+There is no simulated backend; Demo mode covers the no-hardware case.
 
-**This repo is a scaffold, not a working device yet** — `driver.py`'s
-`read_and_publish()` raises `NotImplementedError` until the design round
-below is resolved and implemented.
-
-## Design checklist (resolve before first real commit)
-
-- [ ] **Sensing or remapping?** Does this device own the sensing (reads
-      hardware directly, like driver-tank's ADS1115) or remap an existing feed
-      (like driver-venus's Victron remap)?
-- [ ] **Topics published** — replace the section below with the real
-      `renewvan/heater/<id>/<property>` fields, split into identity
-      (published once) vs live (republished every poll). See driver-tank's
-      README "Topics published" section for the shape to match.
-- [ ] **Hub schema** — does Heater extend an existing
-      `hub/schema/*.schema.json` entity, or need a new
-      `hub/schema/heater.schema.json` + example fixtures
-      (`hub/schema/validate-examples.sh` must pass)?
-- [ ] **Wiring** — replace the section below with real hardware
-      wiring/config, or delete it if this device remaps an existing feed
-      instead of reading hardware directly.
-- [ ] **`DeviceConfig`** (`driver_heater/config.py`) — add the hardware/feed
-      -specific fields this device needs, mirrored into `config.default.ini`.
-- [ ] **Hub integration** — once a version is tagged, add a
-      `driver-heater` service block to `hub/docker-compose.yml` (pattern:
-      driver-tank's block) and any new keys to `hub/.env.example`.
+> **WARNING: `commands_enabled` is `false` by default for a reason.** The hub's broker accepts
+> anonymous clients, so with commands on, anyone who can reach port 1883 can start and stop the
+> heater. Keep the broker on the van's own network. A typo in the value stops the Driver at startup.
 
 ## Topics published
 
-TODO — see the design checklist above.
+All under `renewvan/heater/<id>/`, retained, JSON. Unknown is an empty retained payload.
 
-## Wiring
+- Identity, once: `driver`, `name` (omitted when empty), `commands_enabled`.
+- Live, every poll: `phase`, `status_code`, `error_code`, `internal_temperature_c`,
+  `heater_temperature_c` (byte - 15), `external_temperature_c` (absent on the `0x7F` sentinel),
+  `voltage_v`, `fan_rpm` (byte x 60), `fuel_pump_hz` (byte / 100), `ventilating` (`true` only for
+  status 3.35), and `mode`, `setpoint_c`, `power_level` (read back from the heater, never cached).
+- `runtime_s` is not published: no verified source byte.
+- After `stale_after_s` without a valid status, all live fields are cleared.
 
-TODO — see the design checklist above.
+## Commands
+
+Unretained, strict JSON, under `renewvan/heater/<id>/`: `set` (`true` start / `false` stop),
+`mode/set` (`"heater_temperature"`, `"external_temperature"`, `"power"`), `setpoint_c/set` (integer
+1-30), `power_level/set` (integer 0-9), `ventilating/set` (`true`/`false`), `clear_error/set`
+(`true` only). A rejected command is logged at WARNING with its reason; there is no reply topic.
+Confirmation is the retained field changing. The Driver never stops or re-commands the heater on
+its own, including after a restart.
+
+## Installing
+
+```bash
+# Stable device name, so a USB re-plug does not break the Driver. Adjust the ids to your adapter
+# (udevadm info -a /dev/ttyUSB0).
+echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="ttyAUTOTERM"' \
+  | sudo tee /etc/udev/rules.d/99-autoterm.rules
+sudo udevadm control --reload && sudo udevadm trigger
+sudo usermod -aG dialout renewvan
+```
+
+Copy `config.ini.example` to `config.ini`, set `[mqtt] host`, and decide on `commands_enabled`.
+
+### A second heater
+
+Run a second Driver process with its own config: a distinct `[device] id`, `[mqtt] client_id` and
+`serial_device`. Two heaters never share one process or one failure.
+
+## Unverified assumptions
+
+Only status codes `0.1` and `3.35` are backed by real AIR 2D frames. Everything below is a
+research default to walk on the first bench session (`hub/docs/adr/0021-...`):
+
+- the `0x1C` -> `0x04` -> `0x06` init sequence (`send_init`; may not be needed);
+- reading `0x02` settings on connect (never seen on a real AIR 2D);
+- the `0x0D` unblock behind `clear_error/set`;
+- live settings changes (`mode`, `setpoint_c`, `power_level`) and the 1-30 setpoint bounds;
+- every status code except `0.1` and `3.35`, and so the phase mapping;
+- which of the two fan bytes (11 commanded, 12 measured) is right: `fan_rpm` uses byte 12;
+- rejected-command behaviour: the heater has no NACK, so a rejected frame looks like a timeout and
+  confirmation is always a read-back (one retry after three polls, then a WARNING).
 
 ## Development
 

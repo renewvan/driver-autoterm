@@ -5,6 +5,7 @@ description = "Autoterm AIR 2D diesel heater driver for the renewvan hub (serial
 requires-python = ">=3.11"
 dependencies = [
     "paho-mqtt>=1.6,<2",
+    "pyserial>=3.5",
 ]
 
 [build-system]

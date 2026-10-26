@@ -19,11 +19,13 @@ from driver_heater.config import MqttConfig
 logger = logging.getLogger(__name__)
 
 HEALTH_TOPIC = "renewvan/heater/health"
+INFO_TOPIC = "renewvan/heater/info"
 
 
 class Publisher:
-    def __init__(self, config: MqttConfig) -> None:
+    def __init__(self, config: MqttConfig, info: str) -> None:
         self._config = config
+        self._info = info
         self._client = mqtt.Client(client_id=config.client_id, clean_session=False)
         if config.username:
             self._client.username_pw_set(config.username, config.password)
@@ -39,6 +41,8 @@ class Publisher:
     def _on_connect(self, client, userdata, flags, rc):  # noqa: ANN001
         if rc == 0:
             logger.info("Connected to MQTT broker %s:%s", self._config.host, self._config.port)
+            # Info first, then online: a consumer that sees online always finds info retained.
+            client.publish(INFO_TOPIC, payload=self._info, qos=1, retain=True)
             client.publish(HEALTH_TOPIC, payload="online", qos=1, retain=True)
             for topic in self._subscriptions:
                 client.subscribe(topic, qos=1)
