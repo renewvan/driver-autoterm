@@ -1,0 +1,39 @@
+name: Release
+
+# Start a release from the Actions tab or `gh workflow run release.yml -f bump=minor`.
+# The process lives in renewvan/hub (docs/adr/0015); this file only says what this repo ships.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the latest release's version to increment
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: 'Explicit version (e.g. 0.2.0 or 0.2.0-beta.1); overrides "bump"'
+        type: string
+        required: false
+      prerelease:
+        description: 'Pre-release (a beta from a feature branch): tests gate it, `main` and `:latest` stay untouched'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    permissions:
+      contents: write
+      packages: write
+    uses: renewvan/hub/.github/workflows/release.yml@eb9ad8a4b29519bbbd1c33b1092cdb7719628ec9
+    with:
+      kind: image
+      image: driver-heater
+      python-version: "3.12"
+      test-command: pip install -r requirements.txt -r requirements-test.txt && pytest tests/ -v --tb=short
+      bump: ${{ inputs.bump }}
+      version: ${{ inputs.version }}
+      prerelease: ${{ inputs.prerelease }}

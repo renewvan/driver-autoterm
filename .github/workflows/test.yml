@@ -1,0 +1,11 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    uses: renewvan/hub/.github/workflows/python-test.yml@eb9ad8a4b29519bbbd1c33b1092cdb7719628ec9

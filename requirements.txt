@@ -1,0 +1,3 @@
+paho-mqtt>=1.6,<2
+# Add hardware/feed-specific deps here (e.g. pyserial, smbus2, bleak) once
+# Step 5 of scaffold-driver's design round is resolved.

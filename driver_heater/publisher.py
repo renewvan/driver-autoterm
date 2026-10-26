@@ -1,0 +1,78 @@
+"""Persistent MQTT connection with LWT and a retained-topic publish helper.
+
+Shared boilerplate across every renewvan/driver-* repo (see
+driver-tank/driver_tank/publisher.py): connect with retry/backoff, an LWT on a
+health topic so downstream consumers can detect a dead device, and a
+long-lived connection -- this device is the source of truth, not a
+re-publisher.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Callable
+
+import paho.mqtt.client as mqtt
+
+from driver_heater.config import MqttConfig
+
+logger = logging.getLogger(__name__)
+
+HEALTH_TOPIC = "renewvan/heater/health"
+
+
+class Publisher:
+    def __init__(self, config: MqttConfig) -> None:
+        self._config = config
+        self._client = mqtt.Client(client_id=config.client_id, clean_session=False)
+        if config.username:
+            self._client.username_pw_set(config.username, config.password)
+        self._client.will_set(HEALTH_TOPIC, payload="offline", qos=1, retain=True)
+        self._client.reconnect_delay_set(
+            min_delay=config.reconnect_min_delay, max_delay=config.reconnect_max_delay
+        )
+        self._client.on_connect = self._on_connect
+        self._client.on_disconnect = self._on_disconnect
+        self._client.on_message = self._on_message
+        self._subscriptions: dict[str, Callable[[str], None]] = {}
+
+    def _on_connect(self, client, userdata, flags, rc):  # noqa: ANN001
+        if rc == 0:
+            logger.info("Connected to MQTT broker %s:%s", self._config.host, self._config.port)
+            client.publish(HEALTH_TOPIC, payload="online", qos=1, retain=True)
+            for topic in self._subscriptions:
+                client.subscribe(topic, qos=1)
+        else:
+            logger.error("MQTT connect failed with rc=%s", rc)
+
+    def _on_disconnect(self, client, userdata, rc):  # noqa: ANN001
+        if rc != 0:
+            logger.warning("Unexpected MQTT disconnect (rc=%s); paho will auto-reconnect", rc)
+
+    def _on_message(self, client, userdata, msg):  # noqa: ANN001
+        topic = msg.topic
+        payload = msg.payload.decode("utf-8", errors="replace")
+        if topic in self._subscriptions:
+            try:
+                self._subscriptions[topic](payload)
+            except Exception:
+                logger.exception(f"Error handling message on topic {topic}")
+        else:
+            logger.debug(f"Ignoring message on unsubscribed topic {topic}")
+
+    def connect(self) -> None:
+        self._client.connect(self._config.host, self._config.port)
+        self._client.loop_start()
+
+    def publish(self, topic: str, payload: str) -> None:
+        self._client.publish(topic, payload=payload, qos=1, retain=True)
+
+    def subscribe(self, topic: str, callback: Callable[[str], None]) -> None:
+        self._subscriptions[topic] = callback
+        self._client.subscribe(topic, qos=1)
+        logger.info(f"Subscribed to {topic}")
+
+    def disconnect(self) -> None:
+        self._client.publish(HEALTH_TOPIC, payload="offline", qos=1, retain=True)
+        self._client.loop_stop()
+        self._client.disconnect()

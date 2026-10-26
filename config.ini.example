@@ -1,0 +1,8 @@
+; driver-heater — local configuration
+; ======================================
+; Copy this file to config.ini and override only what differs from
+; config.default.ini. config.ini is gitignored — it holds this
+; installation's real MQTT broker host and any hardware-specific settings.
+
+[mqtt]
+host = 192.168.1.10
