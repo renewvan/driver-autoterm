@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Protocol
 
-from driver_heater.protocol import Frame, FrameParser, build_frame
+from driver_autoterm.protocol import Frame, FrameParser, build_frame
 
 logger = logging.getLogger(__name__)
 

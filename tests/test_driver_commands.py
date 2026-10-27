@@ -1,6 +1,6 @@
 import pytest
 
-from driver_heater.protocol import (
+from driver_autoterm.protocol import (
     MSG_SETTINGS,
     MSG_START,
     MSG_STATUS,

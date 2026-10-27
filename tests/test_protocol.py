@@ -1,4 +1,4 @@
-from driver_heater.protocol import FrameParser, build_frame, crc16_modbus, parse_status
+from driver_autoterm.protocol import FrameParser, build_frame, crc16_modbus, parse_status
 
 # F1: the one real AIR 2D capture (status 3.35, fan only), CRC-valid.
 F1 = bytes.fromhex("aa0413000f0323001c7f0084012d08004646000000000062f369")

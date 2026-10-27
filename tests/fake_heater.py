@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 
-from driver_heater.protocol import (
+from driver_autoterm.protocol import (
     MSG_INIT,
     MSG_SERIAL,
     MSG_SETTINGS,

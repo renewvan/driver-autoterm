@@ -68,7 +68,7 @@ def load_config(
             port=mqtt.getint("port", 1883),
             username=mqtt.get("username") or None,
             password=mqtt.get("password") or None,
-            client_id=mqtt.get("client_id", "driver-heater"),
+            client_id=mqtt.get("client_id", "driver-autoterm"),
             reconnect_min_delay=mqtt.getfloat("reconnect_min_delay", 1.0),
             reconnect_max_delay=mqtt.getfloat("reconnect_max_delay", 30.0),
         ),

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from driver_heater.protocol import MSG_INIT, MSG_SERIAL, MSG_SETTINGS, MSG_STATUS, MSG_VERSION
+from driver_autoterm.protocol import MSG_INIT, MSG_SERIAL, MSG_SETTINGS, MSG_STATUS, MSG_VERSION
 
 SCHEMA = Path(__file__).resolve().parents[2] / "hub" / "schema" / "heater.schema.json"
 
@@ -22,7 +22,7 @@ def test_init_can_be_turned_off(make_rig):
 
 
 def test_publishes_identity_and_idle_telemetry(rig):
-    assert rig.value("driver") == "heater"
+    assert rig.value("driver") == "autoterm"
     assert rig.value("name") == "Heater"
     assert rig.value("commands_enabled") is True
     assert rig.value("phase") == "off"
@@ -129,7 +129,7 @@ def test_recovers_and_resyncs_after_silence(rig):
 def test_published_values_validate_against_the_hub_schema(rig):
     jsonschema = pytest.importorskip("jsonschema")
     if not SCHEMA.exists():
-        pytest.skip("hub repo not checked out beside driver-heater")
+        pytest.skip("hub repo not checked out beside driver-autoterm")
     rig.set_status(3, 35)
     rig.poll()
     entity = {

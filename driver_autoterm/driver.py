@@ -15,10 +15,10 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from driver_heater.config import AppConfig, DeviceConfig
-from driver_heater.driver_info import build_info, read_board_serial
-from driver_heater.link import HeaterLink, Stream, open_serial
-from driver_heater.protocol import (
+from driver_autoterm.config import AppConfig, DeviceConfig
+from driver_autoterm.driver_info import build_info, read_board_serial
+from driver_autoterm.link import HeaterLink, Stream, open_serial
+from driver_autoterm.protocol import (
     CODE_BY_MODE,
     MSG_INIT,
     MSG_SERIAL,
@@ -35,11 +35,11 @@ from driver_heater.protocol import (
     parse_settings,
     parse_status,
 )
-from driver_heater.publisher import Publisher
+from driver_autoterm.publisher import Publisher
 
 logger = logging.getLogger(__name__)
 
-DRIVER_KEY = "heater"
+DRIVER_KEY = "autoterm"
 COMMAND_TOPICS = (
     "set",
     "mode/set",

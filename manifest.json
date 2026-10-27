@@ -1,8 +1,8 @@
 {
-  "driver": "heater",
+  "driver": "autoterm",
   "product": "Autoterm AIR 2D diesel heater",
   "source": "Autoterm serial protocol over a 9600 8N1 UART",
   "publishes": ["heater"],
   "manufacturer": "renewvan",
-  "homepage": "https://github.com/renewvan/driver-heater"
+  "homepage": "https://github.com/renewvan/driver-autoterm"
 }

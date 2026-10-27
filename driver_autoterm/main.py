@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""driver-heater entrypoint."""
+"""driver-autoterm entrypoint."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ import argparse
 import logging
 from pathlib import Path
 
-from driver_heater.config import DEFAULT_CONFIG_PATH, load_config
-from driver_heater.driver import run
+from driver_autoterm.config import DEFAULT_CONFIG_PATH, load_config
+from driver_autoterm.driver import run
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="driver-heater: MQTT Heater device")
+    parser = argparse.ArgumentParser(description="driver-autoterm: MQTT Heater device")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging")
     parser.add_argument(
         "-c", "--config", default="config.ini", help="Path to local config.ini override"

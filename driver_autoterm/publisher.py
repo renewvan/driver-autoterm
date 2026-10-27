@@ -14,7 +14,7 @@ from typing import Callable
 
 import paho.mqtt.client as mqtt
 
-from driver_heater.config import MqttConfig
+from driver_autoterm.config import MqttConfig
 
 logger = logging.getLogger(__name__)
 

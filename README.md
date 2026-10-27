@@ -1,4 +1,4 @@
-# driver-heater
+# driver-autoterm
 
 Autoterm AIR 2D diesel heater driver for the renewvan hub (serial UART to MQTT)
 
@@ -68,8 +68,8 @@ research default to walk on the first bench session (`hub/docs/adr/0021-...`):
 ## Development
 
 ```bash
-git clone git@github.com:renewvan/driver-heater.git
-cd driver-heater
+git clone git@github.com:renewvan/driver-autoterm.git
+cd driver-autoterm
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-test.txt
 ```
@@ -93,10 +93,10 @@ differs.
 
 ```bash
 pip install -r requirements.txt
-python -m driver_heater.main --config config.ini
+python -m driver_autoterm.main --config config.ini
 ```
 
-Install `driver_heater/systemd/driver-heater.service` to run at boot
+Install `driver_autoterm/systemd/driver-autoterm.service` to run at boot
 (`Restart=on-failure`).
 
 ## Testing
@@ -109,6 +109,6 @@ pytest tests/ -v
 ## Releasing
 
 Tagging a GitHub release builds and publishes
-`ghcr.io/<owner>/driver-heater:<tag>`, which `hub`'s deployment compose file pins
+`ghcr.io/<owner>/driver-autoterm:<tag>`, which `hub`'s deployment compose file pins
 by tag (never builds from source — see
 `hub/docs/adr/0001-compose-services-via-pinned-images-not-git-submodules.md`).

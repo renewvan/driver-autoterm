@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from driver_heater.config import load_config
+from driver_autoterm.config import load_config
 
 
 def test_load_config_defaults() -> None:

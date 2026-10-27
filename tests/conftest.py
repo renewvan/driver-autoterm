@@ -3,8 +3,8 @@ import logging
 
 import pytest
 
-from driver_heater.config import DeviceConfig
-from driver_heater.driver import HeaterDriver
+from driver_autoterm.config import DeviceConfig
+from driver_autoterm.driver import HeaterDriver
 from tests.fake_heater import FakeHeater, FakePublisher
 
 
