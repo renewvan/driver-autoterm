@@ -151,28 +151,19 @@ def test_stop_is_accepted_in_every_phase(rig, status):
     assert len(sent(rig, MSG_STOP)) == 1
 
 
-def test_ventilating_false_is_a_stop(rig):
-    rig.set_status(3, 35)
+# --- refused until bench-verified ------------------------------------------------------
+@pytest.mark.parametrize("suffix", ["ventilating/set", "clear_error/set"])
+@pytest.mark.parametrize("payload", [True, False])
+@pytest.mark.parametrize("status", [(0, 1, 0), (0, 1, 5), (3, 35, 0)])
+def test_unverified_commands_are_refused_with_one_warning(rig, suffix, payload, status, warnings):
+    rig.set_status(status[0], status[1], error=status[2])
     rig.poll()
-    rig.command("ventilating/set", False)
-    rig.poll()
-    assert sent(rig, MSG_STOP)
-
-
-# --- ventilation --------------------------------------------------------------------
-def test_ventilate_from_off_uses_the_read_power_level(rig):
-    rig.command("ventilating/set", True)
-    rig.poll(2)
-    assert sent(rig, MSG_VENTILATE) == [bytes([0xFF, 0xFF, 8, 0xFF])]
-    assert rig.value("ventilating") is True
-
-
-def test_ventilate_rejected_when_not_off(rig, warnings):
-    rig.set_status(3, 0)
-    rig.poll()
-    rig.command("ventilating/set", True)
-    rig.poll()
-    assert not sent(rig, MSG_VENTILATE) and warnings()
+    rig.heater.received.clear()
+    rig.command(suffix, payload)
+    rig.poll(4)
+    assert {m for m, _ in rig.heater.received} == {MSG_STATUS}  # no frame, 0x0D never sent
+    assert not sent(rig, MSG_UNBLOCK) and not sent(rig, MSG_VENTILATE)
+    assert len([w for w in warnings() if "refused" in w]) == 1
 
 
 # --- settings -----------------------------------------------------------------------
@@ -211,26 +202,6 @@ def test_settings_allowed_while_running(rig):
     assert rig.value("power_level") == 5
 
 
-# --- clear_error ----------------------------------------------------------------------
-def test_clear_error_sends_unblock_only_with_an_error(rig):
-    rig.set_status(0, 1, error=5)
-    rig.poll()
-    rig.command("clear_error/set", True)
-    rig.poll(2)
-    assert len(sent(rig, MSG_UNBLOCK)) == 1 and not sent(rig, MSG_START)
-    assert rig.value("error_code") == 0
-
-
-def test_clear_error_rejected_at_error_zero_or_false(rig, warnings):
-    rig.command("clear_error/set", True)
-    rig.poll()
-    rig.set_status(0, 1, error=5)
-    rig.poll()
-    rig.command("clear_error/set", False)
-    rig.poll()
-    assert not sent(rig, MSG_UNBLOCK) and len(warnings()) == 2
-
-
 # --- malformed payloads ---------------------------------------------------------------
 @pytest.mark.parametrize(
     "suffix,payload",
@@ -251,8 +222,6 @@ def test_clear_error_rejected_at_error_zero_or_false(rig, warnings):
         ("power_level/set", "10"),
         ("power_level/set", "-1"),
         ("power_level/set", "2.5"),
-        ("ventilating/set", "1"),
-        ("clear_error/set", "1"),
     ],
 )
 def test_malformed_commands_send_no_frame(rig, suffix, payload, warnings):
@@ -326,3 +295,16 @@ def test_no_recommand_after_restart(make_rig):
     assert second.value("phase") == "starting"
     assert not sent(second, MSG_START) and not sent(second, MSG_STOP)
     assert {m for m, _ in first.heater.received} <= {MSG_STATUS, MSG_SETTINGS, 0x1C, 0x04, 0x06}
+
+
+# --- init frames --------------------------------------------------------------------
+def test_default_config_sends_no_init_frames_and_enabling_it_does(make_rig):
+    from driver_autoterm.config import load_config
+
+    assert load_config().device.send_init is False
+    off = make_rig(send_init=False)
+    off.poll()
+    on = make_rig(send_init=True)
+    on.poll()
+    assert {m for m, _ in off.heater.received} == {MSG_STATUS, MSG_SETTINGS}
+    assert len(on.heater.received) > len(off.heater.received)

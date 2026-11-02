@@ -26,8 +26,6 @@ from driver_autoterm.protocol import (
     MSG_START,
     MSG_STATUS,
     MSG_STOP,
-    MSG_UNBLOCK,
-    MSG_VENTILATE,
     MSG_VERSION,
     Settings,
     Status,
@@ -68,6 +66,10 @@ CONFIRM_POLLS = 3
 # Stop is sent at most this many times, STOP_RETRY_POLLS polls apart, then one ERROR.
 STOP_ATTEMPTS = 3
 STOP_RETRY_POLLS = 3
+
+
+# Frames not yet bench-verified on a real heater; the 0x0D unblock is never sent.
+_REFUSED_COMMANDS = frozenset({"ventilating/set", "clear_error/set"})
 
 
 def _topic(device_id: str, prop: str) -> str:
@@ -297,6 +299,8 @@ class HeaterDriver:
             raise Rejected("commands_enabled is false")
         if self._stale or not self._synced or self._status is None or self._settings is None:
             raise Rejected("heater state is stale or not yet synced")
+        if suffix in _REFUSED_COMMANDS:
+            raise Rejected(f"{suffix} is refused until its frame is bench-verified")
         try:
             value = json.loads(payload)
         except json.JSONDecodeError:
@@ -313,27 +317,6 @@ class HeaterDriver:
                 self._start(status, phase, ventilating, settings)
             else:
                 self._stop()
-        elif suffix == "ventilating/set":
-            self._expect_bool(value)
-            if not value:
-                self._stop()
-            elif phase != "off":
-                raise Rejected(f"cannot ventilate from phase {phase}")
-            else:
-                level = settings.power_level
-                self._send_pending(
-                    lambda: self._send(MSG_VENTILATE, bytes([0xFF, 0xFF, level, 0xFF])),
-                    lambda s, _st: self._phase(s) != "off",
-                    name="ventilating",
-                )
-        elif suffix == "clear_error/set":
-            if value is not True:
-                raise Rejected("only true is accepted")
-            if status.error_code == 0:
-                raise Rejected("heater reports no error")
-            self._send_pending(
-                lambda: self._send(MSG_UNBLOCK), lambda s, _st: s.error_code == 0, name="clear_error"
-            )
         else:
             self._settings_command(suffix, value, phase, ventilating, settings)
 

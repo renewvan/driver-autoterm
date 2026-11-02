@@ -14,3 +14,5 @@ serial_device = /dev/ttyAUTOTERM
 ; WARNING: the broker accepts anonymous clients. With this true, anyone who can
 ; reach it can start and stop the heater. Keep the broker on the van's own network.
 commands_enabled = false
+; Init frames (0x1C/0x04/0x06) on connect. Not needed on an AIR 2D; leave false.
+send_init = false
