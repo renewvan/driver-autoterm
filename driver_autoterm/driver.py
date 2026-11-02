@@ -67,17 +67,8 @@ CONFIRM_POLLS = 3
 STOP_ATTEMPTS = 3
 STOP_RETRY_POLLS = 3
 
-
-# Frames not yet bench-verified on a real heater; the 0x0D unblock is never sent.
-_REFUSED_COMMANDS = frozenset({"ventilating/set", "clear_error/set"})
-
-
-def _topic(device_id: str, prop: str) -> str:
-    return f"renewvan/heater/{device_id}/{prop}"
-
-
 # (major, minor) -> phase. Major 0 is "off" for any minor. 3.35 and 3.4 are unverified
-# defaults; every other code is verified on a real AIR 2D (2026-11-02) except unmapped ones.
+# defaults; every other listed code was seen on a real AIR 2D (2026-11-02).
 PHASES: dict[tuple[int, int], str] = {
     (1, 0): "starting",
     (1, 1): "starting",
@@ -92,6 +83,14 @@ PHASES: dict[tuple[int, int], str] = {
     (3, 4): "shutting_down",  # unverified
     (4, 0): "shutting_down",
 }
+
+
+# Frames not yet bench-verified on a real heater; the 0x0D unblock is never sent.
+_REFUSED_COMMANDS = frozenset({"ventilating/set", "clear_error/set"})
+
+
+def _topic(device_id: str, prop: str) -> str:
+    return f"renewvan/heater/{device_id}/{prop}"
 
 
 def map_phase(major: int, minor: int) -> str | None:
@@ -109,7 +108,6 @@ class Rejected(Exception):
 class _Pending:
     send: Callable[[], None]
     confirmed: Callable[[Status, Settings | None], bool]
-    reread_settings: bool = False
     name: str = "command"
     polls: int = 0
     retried: bool = False
@@ -159,6 +157,7 @@ class HeaterDriver:
         self._stop_pending = False
         self._stop_attempts = 0
         self._stop_polls = 0
+        self._written: tuple[Settings, str] | None = None  # settings write awaiting its 0x02 read
 
     # --- one cycle ----------------------------------------------------------------
     def poll(self) -> None:
@@ -186,11 +185,23 @@ class HeaterDriver:
         try:
             if not self._synced:
                 return self._connect()
-            return self._read_status()
+            status = self._read_status()
+            if status is not None and self._written is not None:
+                self._confirm_settings()
+            return status
         except OSError as exc:
             logger.warning("Serial error on %s: %s", self._cfg.serial_device, exc)
             self._drop_link()
             return None
+
+    def _confirm_settings(self) -> None:
+        """Compare the write with this poll's 0x02 read: one WARNING on mismatch, never a retry."""
+        assert self._written is not None and self._status is not None
+        expected, name = self._written
+        self._written = None
+        self._read_settings()
+        if self._settings != expected:
+            self._warn_unconfirmed(name)
 
     def _ensure_link(self) -> HeaterLink:
         if self._link is None:
@@ -316,7 +327,7 @@ class HeaterDriver:
         ventilating = (status.major, status.minor) == (3, 35)
         settings = self._settings
 
-        stopping = (suffix in ("set", "ventilating/set")) and value is False
+        stopping = suffix == "set" and value is False
         if phase is None and not stopping:
             raise Rejected(f"unknown status code {status.status_code}: only stop is accepted")
 
@@ -373,12 +384,10 @@ class HeaterDriver:
         if ventilating or phase == "shutting_down":
             blocker = "ventilating" if ventilating else phase
             raise Rejected(f"settings cannot change while {blocker}")
-        self._send_pending(
-            lambda: self._send(MSG_SETTINGS, encode_settings(new)),
-            lambda _s, st: st == new,
-            reread_settings=True,
-            name=suffix.removesuffix("/set"),
-        )
+        self._stop_pending = False
+        self._send(MSG_SETTINGS, encode_settings(new))
+        # Confirmed by the next regular poll's 0x02 read, so the heater has time to apply it.
+        self._written = (new, suffix.removesuffix("/set"))
 
     @staticmethod
     def _expect_int(value: object, low: int, high: int) -> None:
@@ -401,19 +410,13 @@ class HeaterDriver:
         self,
         send: Callable[[], None],
         confirmed: Callable[[Status, Settings | None], bool],
-        reread_settings: bool = False,
         name: str = "command",
     ) -> None:
         self._stop_pending = False
         send()
         self._read_settings()
         assert self._status is not None
-        if reread_settings:
-            # A settings write is confirmed by the very next 0x02 read: no retry.
-            if not confirmed(self._status, self._settings):
-                self._warn_unconfirmed(name)
-        else:
-            self._pending = _Pending(send, confirmed, reread_settings, name)
+        self._pending = _Pending(send, confirmed, name)
         self._publish_live()
 
     def _service_stop(self) -> None:
@@ -438,8 +441,6 @@ class HeaterDriver:
         pending = self._pending
         if pending is None or self._status is None:
             return
-        if pending.reread_settings:
-            self._read_settings()
         if pending.confirmed(self._status, self._settings):
             self._pending = None
             self._publish_live()

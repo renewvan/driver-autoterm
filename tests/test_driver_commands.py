@@ -52,6 +52,19 @@ def test_commands_rejected_when_stale(rig, warnings):
     assert any("stale" in w for w in warnings())
 
 
+@pytest.mark.parametrize("state", ["disabled", "stale"])
+def test_stop_is_rejected_with_a_warning_when_disabled_or_stale(make_rig, state, warnings):
+    rig = make_rig(commands_enabled=state != "disabled")
+    rig.poll()
+    if state == "stale":
+        rig.heater.silent = True
+        rig.poll(6)
+    rig.command("set", False)
+    rig.poll()
+    assert not sent(rig, MSG_STOP)
+    assert any("commands_enabled is false" in w or "stale" in w for w in warnings())
+
+
 # --- start ------------------------------------------------------------------------
 def test_start_from_off_uses_last_read_settings_and_is_confirmed(rig):
     rig.command("set", True)
@@ -171,14 +184,17 @@ def test_setpoint_writes_full_settings_and_reads_back(rig):
     rig.command("setpoint_c/set", 22)
     rig.poll()
     assert sent(rig, MSG_SETTINGS)[1] == bytes([1, 0, 4, 22, 0, 8])
+    assert len(sent(rig, MSG_SETTINGS)) == 2  # no immediate read: the next poll reads it back
+    rig.poll()
+    assert len(sent(rig, MSG_SETTINGS)) == 3
     assert rig.value("setpoint_c") == 22
 
 
 def test_mode_and_power_level_change_one_field_each(rig):
     rig.command("mode/set", "external_temperature")
-    rig.poll()
+    rig.poll(2)
     rig.command("power_level/set", 3)
-    rig.poll()
+    rig.poll(2)
     writes = [p for p in sent(rig, MSG_SETTINGS) if p]
     assert writes[0] == bytes([1, 0, 3, 16, 0, 8]) and writes[1] == bytes([1, 0, 3, 16, 0, 3])
     assert (rig.value("mode"), rig.value("power_level")) == ("external_temperature", 3)
@@ -198,7 +214,7 @@ def test_settings_allowed_while_running(rig):
     rig.set_status(3, 0)
     rig.poll()
     rig.command("power_level/set", 5)
-    rig.poll()
+    rig.poll(2)
     assert rig.value("power_level") == 5
 
 
@@ -273,6 +289,7 @@ def test_settings_write_mismatch_warns_once_without_retry_or_new_topic(rig, warn
     rig.command("setpoint_c/set", 22)
     rig.poll(10)
     assert len([p for p in sent(rig, MSG_SETTINGS) if p]) == 1  # no second attempt
+    assert len(sent(rig, MSG_SETTINGS)) == 3  # connect read, write, one confirming read
     assert rig.value("setpoint_c") == 16  # the read-back is what is published
     assert set(rig.pub.retained) == topics
     unconfirmed = [w for w in warnings() if "unconfirmed" in w]
