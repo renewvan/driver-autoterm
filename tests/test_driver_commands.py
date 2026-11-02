@@ -275,7 +275,8 @@ def test_unconfirmed_start_retries_once_after_three_polls_then_warns(rig, warnin
     assert len(sent(rig, MSG_START)) == 2  # one retry, no blind double-send before it
     rig.poll(10)
     assert len(sent(rig, MSG_START)) == 2
-    assert any("unconfirmed" in w for w in warnings())
+    unconfirmed = [w for w in warnings() if "unconfirmed" in w]
+    assert len(unconfirmed) == 1 and "start" in unconfirmed[0] and "off" in unconfirmed[0]
 
 
 def test_retry_that_lands_is_confirmed_without_warning(rig, warnings):
@@ -284,6 +285,30 @@ def test_retry_that_lands_is_confirmed_without_warning(rig, warnings):
     rig.poll(5)
     assert len(sent(rig, MSG_START)) == 2 and rig.value("phase") == "starting"
     assert not any("unconfirmed" in w for w in warnings())
+
+
+def test_settings_write_matching_read_back_has_no_warning(rig, warnings):
+    rig.set_status(3, 0)
+    rig.poll()
+    rig.command("setpoint_c/set", 20)
+    rig.poll(6)
+    assert rig.value("setpoint_c") == 20
+    assert not warnings()
+
+
+def test_settings_write_mismatch_warns_once_without_retry_or_new_topic(rig, warnings):
+    rig.set_status(3, 0)
+    rig.poll()
+    topics = set(rig.pub.retained)
+    rig.heater.ignore[MSG_SETTINGS] = 1  # the write is lost; the read-back shows the old value
+    rig.command("setpoint_c/set", 22)
+    rig.poll(10)
+    assert len([p for p in sent(rig, MSG_SETTINGS) if p]) == 1  # no second attempt
+    assert rig.value("setpoint_c") == 16  # the read-back is what is published
+    assert set(rig.pub.retained) == topics
+    unconfirmed = [w for w in warnings() if "unconfirmed" in w]
+    assert len(unconfirmed) == 1
+    assert "setpoint_c" in unconfirmed[0] and "running" in unconfirmed[0]
 
 
 # --- restart ----------------------------------------------------------------------------

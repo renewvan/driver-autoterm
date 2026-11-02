@@ -102,6 +102,7 @@ class _Pending:
     send: Callable[[], None]
     confirmed: Callable[[Status, Settings | None], bool]
     reread_settings: bool = False
+    name: str = "command"
     polls: int = 0
     retried: bool = False
 
@@ -323,13 +324,16 @@ class HeaterDriver:
                 self._send_pending(
                     lambda: self._send(MSG_VENTILATE, bytes([0xFF, 0xFF, level, 0xFF])),
                     lambda s, _st: self._phase(s) != "off",
+                    name="ventilating",
                 )
         elif suffix == "clear_error/set":
             if value is not True:
                 raise Rejected("only true is accepted")
             if status.error_code == 0:
                 raise Rejected("heater reports no error")
-            self._send_pending(lambda: self._send(MSG_UNBLOCK), lambda s, _st: s.error_code == 0)
+            self._send_pending(
+                lambda: self._send(MSG_UNBLOCK), lambda s, _st: s.error_code == 0, name="clear_error"
+            )
         else:
             self._settings_command(suffix, value, phase, ventilating, settings)
 
@@ -349,6 +353,7 @@ class HeaterDriver:
         self._send_pending(
             lambda: self._send(MSG_START, encode_settings(settings)),
             lambda s, _st: self._phase(s) != "off",
+            name="start",
         )
 
     def _stop(self) -> None:
@@ -380,6 +385,7 @@ class HeaterDriver:
             lambda: self._send(MSG_SETTINGS, encode_settings(new)),
             lambda _s, st: st == new,
             reread_settings=True,
+            name=suffix.removesuffix("/set"),
         )
 
     @staticmethod
@@ -404,12 +410,18 @@ class HeaterDriver:
         send: Callable[[], None],
         confirmed: Callable[[Status, Settings | None], bool],
         reread_settings: bool = False,
+        name: str = "command",
     ) -> None:
         self._stop_pending = False
         send()
         self._read_settings()
-        self._pending = _Pending(send, confirmed, reread_settings)
         assert self._status is not None
+        if reread_settings:
+            # A settings write is confirmed by the very next 0x02 read: no retry.
+            if not confirmed(self._status, self._settings):
+                self._warn_unconfirmed(name)
+        else:
+            self._pending = _Pending(send, confirmed, reread_settings, name)
         self._publish_live()
 
     def _service_stop(self) -> None:
@@ -449,8 +461,14 @@ class HeaterDriver:
             pending.polls = 0
             pending.send()
         else:
-            logger.warning("Command still unconfirmed after its retry; giving up")
+            self._warn_unconfirmed(pending.name)
             self._pending = None
+
+    def _warn_unconfirmed(self, name: str) -> None:
+        assert self._status is not None
+        logger.warning(
+            "Command %s unconfirmed in phase %s; giving up", name, self._phase(self._status)
+        )
 
 
 def run(config: AppConfig) -> None:
