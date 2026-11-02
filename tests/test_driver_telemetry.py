@@ -105,10 +105,13 @@ def test_unknown_code_refuses_start_and_accepts_stop(rig):
     assert len(rig.frames(0x03)) >= 1
 
 
-def test_error_code_does_not_change_phase(rig):
-    rig.set_status(3, 0, error=30)
+@pytest.mark.parametrize(
+    "major,minor,phase", [(3, 0, "running"), (2, 4, "warming_up"), (0, 1, "off")]
+)
+def test_error_code_does_not_change_phase(rig, major, minor, phase):
+    rig.set_status(major, minor, error=30)
     rig.poll()
-    assert rig.value("phase") == "running" and rig.value("error_code") == 30
+    assert rig.value("phase") == phase and rig.value("error_code") == 30
 
 
 def test_scaling(rig):
