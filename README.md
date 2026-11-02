@@ -28,21 +28,17 @@ All under `renewvan/heater/<id>/`, retained, JSON. Unknown is an empty retained 
 
 Unretained, strict JSON, under `renewvan/heater/<id>/`: `set` (`true` start / `false` stop),
 `mode/set` (`"heater_temperature"`, `"external_temperature"`, `"power"`), `setpoint_c/set` (integer
-1-30), `power_level/set` (integer 0-9), `ventilating/set` (`true`/`false`), `clear_error/set`
-(`true` only). A rejected command is logged at WARNING with its reason; there is no reply topic.
-Confirmation is the retained field changing. The Driver never stops or re-commands the heater on
-its own, including after a restart.
+1-30), `power_level/set` (integer 0-9). `ventilating/set` and `clear_error/set` are **refused** (one
+WARNING, no frame sent) until their frames are bench-verified, and the `0x0D` unblock is never
+exposed. A rejected or unconfirmed command is logged at WARNING with the command and phase; there is
+no reply topic. Stop is retried at most 3 times, 3 polls apart, then one ERROR, and is never gated
+by phase. Confirmation is the retained field changing (settings: the next `0x02` read). The Driver
+never stops or re-commands the heater on its own, including after a restart.
 
 ## Installing
 
-```bash
-# Stable device name, so a USB re-plug does not break the Driver. Adjust the ids to your adapter
-# (udevadm info -a /dev/ttyUSB0).
-echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="ttyAUTOTERM"' \
-  | sudo tee /etc/udev/rules.d/99-autoterm.rules
-sudo udevadm control --reload && sudo udevadm trigger
-sudo usermod -aG dialout renewvan
-```
+The stable `/dev/ttyAUTOTERM` udev symlink and `dialout` membership are set up by the hub
+bootstrap; see the hub docs (udev section) rather than a hand-written rule here.
 
 Copy `config.ini.example` to `config.ini`, set `[mqtt] host`, and decide on `commands_enabled`.
 
@@ -53,17 +49,22 @@ Run a second Driver process with its own config: a distinct `[device] id`, `[mqt
 
 ## Unverified assumptions
 
-Only status codes `0.1` and `3.35` are backed by real AIR 2D frames. Everything below is a
-research default to walk on the first bench session (`hub/docs/adr/0021-...`):
+Verified on a real AIR 2D (2026-11-02): the `0x0F` status poll, the `0x02` settings read, and one
+full start-run-stop cycle with single frames (status codes `0.1`-`2.6`, `3.0`, `4.0`; error 0
+throughout). Init is not needed, so `send_init` defaults off.
 
-- the `0x1C` -> `0x04` -> `0x06` init sequence (`send_init`; may not be needed);
-- reading `0x02` settings on connect (never seen on a real AIR 2D);
-- the `0x0D` unblock behind `clear_error/set`;
-- live settings changes (`mode`, `setpoint_c`, `power_level`) and the 1-30 setpoint bounds;
-- every status code except `0.1` and `3.35`, and so the phase mapping;
-- which of the two fan bytes (11 commanded, 12 measured) is right: `fan_rpm` uses byte 12;
-- rejected-command behaviour: the heater has no NACK, so a rejected frame looks like a timeout and
-  confirmation is always a read-back (one retry after three polls, then a WARNING).
+Still unverified; each is blocked or refused until a human-present bench check:
+
+- status codes `3.35` (fan-only) and `3.4` (kept as flagged defaults), so `ventilating/set` is refused;
+- the `0x0D` unblock (never exposed) and the `clear_error` frame (refused);
+- live settings changes (`mode`, `setpoint_c`, `power_level`), the 1-30 setpoint bounds, and
+  confirmation by the next `0x02` read;
+- stop during `1.x`/`2.x` (early stop);
+- what a rejected frame looks like (none seen; the heater has no NACK);
+- error byte versus displayed code (`0x1E` = 30 is High confidence from the manual, wire equals
+  display is Medium);
+- which fan byte is right (11 commanded, 12 measured; `fan_rpm` uses 12);
+- `external_temperature` mode and the probe reading (no probe installed).
 
 ## Development
 
