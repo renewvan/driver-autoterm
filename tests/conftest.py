@@ -11,7 +11,7 @@ from tests.fake_heater import FakeHeater, FakePublisher
 class Rig:
     def __init__(self, **overrides) -> None:
         fields = dict(
-            id="heater_01",
+            id="air2d",
             name="Heater",
             update_interval_ms=1000,
             serial_device="/dev/null",
@@ -34,12 +34,12 @@ class Rig:
             self.driver.poll()
 
     def value(self, name: str):
-        raw = self.pub.retained[f"renewvan/heater/heater_01/{name}"]
+        raw = self.pub.retained[f"renewvan/heater/air2d/{name}"]
         return None if raw == "" else json.loads(raw)
 
     def command(self, suffix: str, payload, raw: bool = False) -> None:
         text = payload if raw else json.dumps(payload)
-        self.pub.send(f"renewvan/heater/heater_01/{suffix}", text)
+        self.pub.send(f"renewvan/heater/air2d/{suffix}", text)
 
     def set_status(self, major: int, minor: int, error: int = 0) -> None:
         self.heater.status = [major, minor]

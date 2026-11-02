@@ -8,7 +8,7 @@
 host = 192.168.1.10
 
 [device]
-id = heater_01
+id = air2d
 name = Heater
 serial_device = /dev/ttyAUTOTERM
 ; WARNING: the broker accepts anonymous clients. With this true, anyone who can
