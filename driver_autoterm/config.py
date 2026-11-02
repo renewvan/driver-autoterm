@@ -73,7 +73,7 @@ def load_config(
             reconnect_max_delay=mqtt.getfloat("reconnect_max_delay", 30.0),
         ),
         device=DeviceConfig(
-            id=device.get("id", "heater_01"),
+            id=device.get("id", "air2d"),
             name=device.get("name", "Heater"),
             update_interval_ms=device.getint("update_interval_ms", 1000),
             serial_device=device.get("serial_device", "/dev/ttyAUTOTERM"),

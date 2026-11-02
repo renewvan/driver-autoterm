@@ -45,7 +45,7 @@ def test_settings_come_from_the_heater_not_from_defaults(rig):
 
 def test_empty_name_is_not_published(make_rig):
     rig = make_rig(name="")
-    assert "renewvan/heater/heater_01/name" not in rig.pub.retained
+    assert "renewvan/heater/air2d/name" not in rig.pub.retained
 
 
 @pytest.mark.parametrize(
