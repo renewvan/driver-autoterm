@@ -71,23 +71,29 @@ def _topic(device_id: str, prop: str) -> str:
     return f"renewvan/heater/{device_id}/{prop}"
 
 
+# (major, minor) -> phase. Major 0 is "off" for any minor. 3.35 and 3.4 are unverified
+# defaults; every other code is verified on a real AIR 2D (2026-11-02) except unmapped ones.
+PHASES: dict[tuple[int, int], str] = {
+    (1, 0): "starting",
+    (1, 1): "starting",
+    (2, 0): "starting",
+    (2, 1): "starting",
+    (2, 2): "starting",
+    (2, 6): "starting",
+    (2, 3): "starting",
+    (2, 4): "warming_up",
+    (3, 0): "running",
+    (3, 35): "running",  # unverified: fan-only, also published as ventilating
+    (3, 4): "shutting_down",  # unverified
+    (4, 0): "shutting_down",
+}
+
+
 def map_phase(major: int, minor: int) -> str | None:
-    """Phase for a status code, or None outside the mapping (only 0.1, 3.35 verified)."""
+    """Phase for a status code, or None when the code is not in the table."""
     if major == 0:
         return "off"
-    if major == 1:
-        return "starting"
-    if major == 2:
-        if 1 <= minor <= 3:
-            return "starting"
-        return "warming_up" if minor == 4 else None
-    if major == 3:
-        if minor in (0, 35):
-            return "running"
-        return "shutting_down" if minor == 4 else None
-    if major == 4:
-        return "shutting_down"
-    return None
+    return PHASES.get((major, minor))
 
 
 class Rejected(Exception):
@@ -230,20 +236,19 @@ class HeaterDriver:
         self._clear_live()
 
     # --- publishing -----------------------------------------------------------------
-    def _phase(self, status: Status) -> str:
+    def _phase(self, status: Status) -> str | None:
         phase = map_phase(status.major, status.minor)
         if phase is None:
             if status.status_code not in self._unknown_codes:
                 self._unknown_codes.add(status.status_code)
-                logger.warning("Unknown status code %s: publishing phase off", status.status_code)
-            return "off"
+                logger.warning("Unknown status code %s: publishing an empty phase", status.status_code)
         return phase
 
     def _publish_live(self) -> None:
         s = self._status
         assert s is not None
         values: dict[str, object | None] = {
-            "phase": self._phase(s),
+            "phase": self._phase(s),  # None publishes an empty retained value
             "status_code": s.status_code,
             "error_code": s.error_code,
             "internal_temperature_c": s.internal_temperature_c,
@@ -301,6 +306,10 @@ class HeaterDriver:
         ventilating = (status.major, status.minor) == (3, 35)
         settings = self._settings
 
+        stopping = (suffix in ("set", "ventilating/set")) and value is False
+        if phase is None and not stopping:
+            raise Rejected(f"unknown status code {status.status_code}: only stop is accepted")
+
         if suffix == "set":
             self._expect_bool(value)
             if value:
@@ -333,7 +342,7 @@ class HeaterDriver:
         if not isinstance(value, bool):
             raise Rejected(f"expected true or false, got {value!r}")
 
-    def _start(self, status: Status, phase: str, ventilating: bool, settings: Settings) -> None:
+    def _start(self, status: Status, phase: str | None, ventilating: bool, settings: Settings) -> None:
         if ventilating or phase == "shutting_down":
             raise Rejected(f"cannot start while {'ventilating' if ventilating else phase}")
         if phase != "off":
@@ -352,7 +361,7 @@ class HeaterDriver:
         self._send(MSG_STOP)
 
     def _settings_command(
-        self, suffix: str, value: object, phase: str, ventilating: bool, settings: Settings
+        self, suffix: str, value: object, phase: str | None, ventilating: bool, settings: Settings
     ) -> None:
         if suffix == "mode/set":
             if not isinstance(value, str) or value not in CODE_BY_MODE:
