@@ -65,6 +65,9 @@ LIVE_FIELDS = (
 )
 # Polls without confirmation before the single retry, and again before giving up.
 CONFIRM_POLLS = 3
+# Stop is sent at most this many times, STOP_RETRY_POLLS polls apart, then one ERROR.
+STOP_ATTEMPTS = 3
+STOP_RETRY_POLLS = 3
 
 
 def _topic(device_id: str, prop: str) -> str:
@@ -145,6 +148,8 @@ class HeaterDriver:
         self._status: Status | None = None
         self._pending: _Pending | None = None
         self._stop_pending = False
+        self._stop_attempts = 0
+        self._stop_polls = 0
 
     # --- one cycle ----------------------------------------------------------------
     def poll(self) -> None:
@@ -348,6 +353,8 @@ class HeaterDriver:
 
     def _stop(self) -> None:
         self._stop_pending = True
+        self._stop_attempts = 1
+        self._stop_polls = 0
         self._pending = None
         self._send(MSG_STOP)
 
@@ -411,8 +418,17 @@ class HeaterDriver:
         assert self._status is not None
         if self._phase(self._status) in ("shutting_down", "off"):
             self._stop_pending = False
-        else:
-            self._send(MSG_STOP)
+            return
+        self._stop_polls += 1
+        if self._stop_polls < STOP_RETRY_POLLS:
+            return
+        if self._stop_attempts >= STOP_ATTEMPTS:
+            logger.error("Heater did not take stop after %d attempts; giving up", STOP_ATTEMPTS)
+            self._stop_pending = False
+            return
+        self._stop_attempts += 1
+        self._stop_polls = 0
+        self._send(MSG_STOP)
 
     def _service_pending(self) -> None:
         pending = self._pending
