@@ -100,19 +100,55 @@ def test_stop_is_accepted_even_with_an_error_and_sent_once_it_takes(rig):
     assert rig.value("phase") == "shutting_down"
 
 
-def test_stop_is_retried_every_poll_until_shutting_down(rig):
+def _stuck_stop(rig):
     rig.set_status(3, 0)
     rig.poll()
     rig.heater.stop_effective = False
     rig.command("set", False)
-    rig.poll(3)
-    assert len(sent(rig, MSG_STOP)) == 3  # immediate + one per later poll
-    rig.heater.stop_effective = True
+
+
+def test_stop_that_never_takes_is_tried_3_times_3_polls_apart_then_one_error(rig, caplog):
+    _stuck_stop(rig)
+    rig.poll(1)  # command accepted: attempt 1
+    assert len(sent(rig, MSG_STOP)) == 1
     rig.poll(2)
-    assert rig.value("phase") == "shutting_down"
-    count = len(sent(rig, MSG_STOP))
+    assert len(sent(rig, MSG_STOP)) == 1
+    rig.poll(1)  # 3 polls after attempt 1
+    assert len(sent(rig, MSG_STOP)) == 2
     rig.poll(3)
-    assert len(sent(rig, MSG_STOP)) == count  # stops retrying
+    assert len(sent(rig, MSG_STOP)) == 3
+    rig.poll(20)
+    assert len(sent(rig, MSG_STOP)) == 3
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+
+
+def test_new_stop_command_restarts_the_attempts(rig, caplog):
+    _stuck_stop(rig)
+    rig.poll(15)
+    assert len(sent(rig, MSG_STOP)) == 3
+    rig.command("set", False)
+    rig.poll(15)
+    assert len(sent(rig, MSG_STOP)) == 6
+    assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 2
+
+
+def test_stop_that_takes_on_a_retry_stops_retrying(rig):
+    _stuck_stop(rig)
+    rig.poll(2)
+    rig.heater.stop_effective = True
+    rig.poll(10)
+    assert rig.value("phase") == "shutting_down"
+    assert len(sent(rig, MSG_STOP)) == 2
+
+
+@pytest.mark.parametrize("status", [(1, 0), (2, 1), (2, 4), (4, 0), (0, 1)])
+def test_stop_is_accepted_in_every_phase(rig, status):
+    rig.set_status(*status)
+    rig.poll()
+    rig.command("set", False)
+    rig.poll()
+    assert len(sent(rig, MSG_STOP)) == 1
 
 
 def test_ventilating_false_is_a_stop(rig):
