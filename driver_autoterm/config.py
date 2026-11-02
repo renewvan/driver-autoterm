@@ -81,7 +81,7 @@ def load_config(
             # getboolean raises on a typo: better a stopped Driver than a guess.
             commands_enabled=device.getboolean("commands_enabled", False),
             stale_after_s=device.getfloat("stale_after_s", 5.0),
-            send_init=device.getboolean("send_init", True),
+            send_init=device.getboolean("send_init", False),
         ),
     )
     _validate(config.device)

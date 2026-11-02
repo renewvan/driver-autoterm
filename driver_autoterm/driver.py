@@ -26,8 +26,6 @@ from driver_autoterm.protocol import (
     MSG_START,
     MSG_STATUS,
     MSG_STOP,
-    MSG_UNBLOCK,
-    MSG_VENTILATE,
     MSG_VERSION,
     Settings,
     Status,
@@ -65,6 +63,30 @@ LIVE_FIELDS = (
 )
 # Polls without confirmation before the single retry, and again before giving up.
 CONFIRM_POLLS = 3
+# Stop is sent at most this many times, STOP_RETRY_POLLS polls apart, then one ERROR.
+STOP_ATTEMPTS = 3
+STOP_RETRY_POLLS = 3
+
+# (major, minor) -> phase. Major 0 is "off" for any minor. 3.35 and 3.4 are unverified
+# defaults; every other listed code was seen on a real AIR 2D (2026-11-02).
+PHASES: dict[tuple[int, int], str] = {
+    (1, 0): "starting",
+    (1, 1): "starting",
+    (2, 0): "starting",
+    (2, 1): "starting",
+    (2, 2): "starting",
+    (2, 6): "starting",
+    (2, 3): "starting",
+    (2, 4): "warming_up",
+    (3, 0): "running",
+    (3, 35): "running",  # unverified: fan-only, also published as ventilating
+    (3, 4): "shutting_down",  # unverified
+    (4, 0): "shutting_down",
+}
+
+
+# Frames not yet bench-verified on a real heater; the 0x0D unblock is never sent.
+_REFUSED_COMMANDS = frozenset({"ventilating/set", "clear_error/set"})
 
 
 def _topic(device_id: str, prop: str) -> str:
@@ -72,22 +94,10 @@ def _topic(device_id: str, prop: str) -> str:
 
 
 def map_phase(major: int, minor: int) -> str | None:
-    """Phase for a status code, or None outside the mapping (only 0.1, 3.35 verified)."""
+    """Phase for a status code, or None when the code is not in the table."""
     if major == 0:
         return "off"
-    if major == 1:
-        return "starting"
-    if major == 2:
-        if 1 <= minor <= 3:
-            return "starting"
-        return "warming_up" if minor == 4 else None
-    if major == 3:
-        if minor in (0, 35):
-            return "running"
-        return "shutting_down" if minor == 4 else None
-    if major == 4:
-        return "shutting_down"
-    return None
+    return PHASES.get((major, minor))
 
 
 class Rejected(Exception):
@@ -98,7 +108,7 @@ class Rejected(Exception):
 class _Pending:
     send: Callable[[], None]
     confirmed: Callable[[Status, Settings | None], bool]
-    reread_settings: bool = False
+    name: str = "command"
     polls: int = 0
     retried: bool = False
 
@@ -145,6 +155,9 @@ class HeaterDriver:
         self._status: Status | None = None
         self._pending: _Pending | None = None
         self._stop_pending = False
+        self._stop_attempts = 0
+        self._stop_polls = 0
+        self._written: tuple[Settings, str] | None = None  # settings write awaiting its 0x02 read
 
     # --- one cycle ----------------------------------------------------------------
     def poll(self) -> None:
@@ -172,11 +185,23 @@ class HeaterDriver:
         try:
             if not self._synced:
                 return self._connect()
-            return self._read_status()
+            status = self._read_status()
+            if status is not None and self._written is not None:
+                self._confirm_settings()
+            return status
         except OSError as exc:
             logger.warning("Serial error on %s: %s", self._cfg.serial_device, exc)
             self._drop_link()
             return None
+
+    def _confirm_settings(self) -> None:
+        """Compare the write with this poll's 0x02 read: one WARNING on mismatch, never a retry."""
+        assert self._written is not None and self._status is not None
+        expected, name = self._written
+        self._written = None
+        self._read_settings()
+        if self._settings != expected:
+            self._warn_unconfirmed(name)
 
     def _ensure_link(self) -> HeaterLink:
         if self._link is None:
@@ -230,20 +255,19 @@ class HeaterDriver:
         self._clear_live()
 
     # --- publishing -----------------------------------------------------------------
-    def _phase(self, status: Status) -> str:
+    def _phase(self, status: Status) -> str | None:
         phase = map_phase(status.major, status.minor)
         if phase is None:
             if status.status_code not in self._unknown_codes:
                 self._unknown_codes.add(status.status_code)
-                logger.warning("Unknown status code %s: publishing phase off", status.status_code)
-            return "off"
+                logger.warning("Unknown status code %s: publishing an empty phase", status.status_code)
         return phase
 
     def _publish_live(self) -> None:
         s = self._status
         assert s is not None
         values: dict[str, object | None] = {
-            "phase": self._phase(s),
+            "phase": self._phase(s),  # None publishes an empty retained value
             "status_code": s.status_code,
             "error_code": s.error_code,
             "internal_temperature_c": s.internal_temperature_c,
@@ -291,6 +315,8 @@ class HeaterDriver:
             raise Rejected("commands_enabled is false")
         if self._stale or not self._synced or self._status is None or self._settings is None:
             raise Rejected("heater state is stale or not yet synced")
+        if suffix in _REFUSED_COMMANDS:
+            raise Rejected(f"{suffix} is refused until its frame is bench-verified")
         try:
             value = json.loads(payload)
         except json.JSONDecodeError:
@@ -301,30 +327,16 @@ class HeaterDriver:
         ventilating = (status.major, status.minor) == (3, 35)
         settings = self._settings
 
+        stopping = suffix == "set" and value is False
+        if phase is None and not stopping:
+            raise Rejected(f"unknown status code {status.status_code}: only stop is accepted")
+
         if suffix == "set":
             self._expect_bool(value)
             if value:
                 self._start(status, phase, ventilating, settings)
             else:
                 self._stop()
-        elif suffix == "ventilating/set":
-            self._expect_bool(value)
-            if not value:
-                self._stop()
-            elif phase != "off":
-                raise Rejected(f"cannot ventilate from phase {phase}")
-            else:
-                level = settings.power_level
-                self._send_pending(
-                    lambda: self._send(MSG_VENTILATE, bytes([0xFF, 0xFF, level, 0xFF])),
-                    lambda s, _st: self._phase(s) != "off",
-                )
-        elif suffix == "clear_error/set":
-            if value is not True:
-                raise Rejected("only true is accepted")
-            if status.error_code == 0:
-                raise Rejected("heater reports no error")
-            self._send_pending(lambda: self._send(MSG_UNBLOCK), lambda s, _st: s.error_code == 0)
         else:
             self._settings_command(suffix, value, phase, ventilating, settings)
 
@@ -333,7 +345,7 @@ class HeaterDriver:
         if not isinstance(value, bool):
             raise Rejected(f"expected true or false, got {value!r}")
 
-    def _start(self, status: Status, phase: str, ventilating: bool, settings: Settings) -> None:
+    def _start(self, status: Status, phase: str | None, ventilating: bool, settings: Settings) -> None:
         if ventilating or phase == "shutting_down":
             raise Rejected(f"cannot start while {'ventilating' if ventilating else phase}")
         if phase != "off":
@@ -344,15 +356,18 @@ class HeaterDriver:
         self._send_pending(
             lambda: self._send(MSG_START, encode_settings(settings)),
             lambda s, _st: self._phase(s) != "off",
+            name="start",
         )
 
     def _stop(self) -> None:
         self._stop_pending = True
+        self._stop_attempts = 1
+        self._stop_polls = 0
         self._pending = None
         self._send(MSG_STOP)
 
     def _settings_command(
-        self, suffix: str, value: object, phase: str, ventilating: bool, settings: Settings
+        self, suffix: str, value: object, phase: str | None, ventilating: bool, settings: Settings
     ) -> None:
         if suffix == "mode/set":
             if not isinstance(value, str) or value not in CODE_BY_MODE:
@@ -369,11 +384,10 @@ class HeaterDriver:
         if ventilating or phase == "shutting_down":
             blocker = "ventilating" if ventilating else phase
             raise Rejected(f"settings cannot change while {blocker}")
-        self._send_pending(
-            lambda: self._send(MSG_SETTINGS, encode_settings(new)),
-            lambda _s, st: st == new,
-            reread_settings=True,
-        )
+        self._stop_pending = False
+        self._send(MSG_SETTINGS, encode_settings(new))
+        # Confirmed by the next regular poll's 0x02 read, so the heater has time to apply it.
+        self._written = (new, suffix.removesuffix("/set"))
 
     @staticmethod
     def _expect_int(value: object, low: int, high: int) -> None:
@@ -396,13 +410,13 @@ class HeaterDriver:
         self,
         send: Callable[[], None],
         confirmed: Callable[[Status, Settings | None], bool],
-        reread_settings: bool = False,
+        name: str = "command",
     ) -> None:
         self._stop_pending = False
         send()
         self._read_settings()
-        self._pending = _Pending(send, confirmed, reread_settings)
         assert self._status is not None
+        self._pending = _Pending(send, confirmed, name)
         self._publish_live()
 
     def _service_stop(self) -> None:
@@ -411,15 +425,22 @@ class HeaterDriver:
         assert self._status is not None
         if self._phase(self._status) in ("shutting_down", "off"):
             self._stop_pending = False
-        else:
-            self._send(MSG_STOP)
+            return
+        self._stop_polls += 1
+        if self._stop_polls < STOP_RETRY_POLLS:
+            return
+        if self._stop_attempts >= STOP_ATTEMPTS:
+            logger.error("Heater did not take stop after %d attempts; giving up", STOP_ATTEMPTS)
+            self._stop_pending = False
+            return
+        self._stop_attempts += 1
+        self._stop_polls = 0
+        self._send(MSG_STOP)
 
     def _service_pending(self) -> None:
         pending = self._pending
         if pending is None or self._status is None:
             return
-        if pending.reread_settings:
-            self._read_settings()
         if pending.confirmed(self._status, self._settings):
             self._pending = None
             self._publish_live()
@@ -433,8 +454,14 @@ class HeaterDriver:
             pending.polls = 0
             pending.send()
         else:
-            logger.warning("Command still unconfirmed after its retry; giving up")
+            self._warn_unconfirmed(pending.name)
             self._pending = None
+
+    def _warn_unconfirmed(self, name: str) -> None:
+        assert self._status is not None
+        logger.warning(
+            "Command %s unconfirmed in phase %s; giving up", name, self._phase(self._status)
+        )
 
 
 def run(config: AppConfig) -> None:

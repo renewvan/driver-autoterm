@@ -27,7 +27,7 @@ def _load(tmp_path: Path, body: str):
 def test_new_defaults() -> None:
     d = load_config().device
     assert (d.name, d.update_interval_ms, d.serial_device) == ("Heater", 1000, "/dev/ttyAUTOTERM")
-    assert (d.commands_enabled, d.stale_after_s, d.send_init) == (False, 5.0, True)
+    assert (d.commands_enabled, d.stale_after_s, d.send_init) == (False, 5.0, False)
 
 
 def test_commands_enabled_typo_stops_startup(tmp_path: Path) -> None:
@@ -54,3 +54,7 @@ def test_slow_poll_interval_only_warns(tmp_path: Path, caplog) -> None:
     config = _load(tmp_path, body)
     assert config.device.update_interval_ms == 2500
     assert "no-communication" in caplog.text
+
+
+def test_send_init_can_be_enabled(tmp_path: Path) -> None:
+    assert _load(tmp_path, "[device]\nsend_init = true\n").device.send_init is True

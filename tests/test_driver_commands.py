@@ -52,6 +52,19 @@ def test_commands_rejected_when_stale(rig, warnings):
     assert any("stale" in w for w in warnings())
 
 
+@pytest.mark.parametrize("state", ["disabled", "stale"])
+def test_stop_is_rejected_with_a_warning_when_disabled_or_stale(make_rig, state, warnings):
+    rig = make_rig(commands_enabled=state != "disabled")
+    rig.poll()
+    if state == "stale":
+        rig.heater.silent = True
+        rig.poll(6)
+    rig.command("set", False)
+    rig.poll()
+    assert not sent(rig, MSG_STOP)
+    assert any("commands_enabled is false" in w or "stale" in w for w in warnings())
+
+
 # --- start ------------------------------------------------------------------------
 def test_start_from_off_uses_last_read_settings_and_is_confirmed(rig):
     rig.command("set", True)
@@ -100,43 +113,70 @@ def test_stop_is_accepted_even_with_an_error_and_sent_once_it_takes(rig):
     assert rig.value("phase") == "shutting_down"
 
 
-def test_stop_is_retried_every_poll_until_shutting_down(rig):
+def _stuck_stop(rig):
     rig.set_status(3, 0)
     rig.poll()
     rig.heater.stop_effective = False
     rig.command("set", False)
+
+
+def test_stop_that_never_takes_is_tried_3_times_3_polls_apart_then_one_error(rig, caplog):
+    _stuck_stop(rig)
+    rig.poll(1)  # command accepted: attempt 1
+    assert len(sent(rig, MSG_STOP)) == 1
+    rig.poll(2)
+    assert len(sent(rig, MSG_STOP)) == 1
+    rig.poll(1)  # 3 polls after attempt 1
+    assert len(sent(rig, MSG_STOP)) == 2
     rig.poll(3)
-    assert len(sent(rig, MSG_STOP)) == 3  # immediate + one per later poll
+    assert len(sent(rig, MSG_STOP)) == 3
+    rig.poll(20)
+    assert len(sent(rig, MSG_STOP)) == 3
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+
+
+def test_new_stop_command_restarts_the_attempts(rig, caplog):
+    _stuck_stop(rig)
+    rig.poll(15)
+    assert len(sent(rig, MSG_STOP)) == 3
+    rig.command("set", False)
+    rig.poll(15)
+    assert len(sent(rig, MSG_STOP)) == 6
+    assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 2
+
+
+def test_stop_that_takes_on_a_retry_stops_retrying(rig):
+    _stuck_stop(rig)
+    rig.poll(2)
     rig.heater.stop_effective = True
-    rig.poll(2)
+    rig.poll(10)
     assert rig.value("phase") == "shutting_down"
-    count = len(sent(rig, MSG_STOP))
-    rig.poll(3)
-    assert len(sent(rig, MSG_STOP)) == count  # stops retrying
+    assert len(sent(rig, MSG_STOP)) == 2
 
 
-def test_ventilating_false_is_a_stop(rig):
-    rig.set_status(3, 35)
+@pytest.mark.parametrize("status", [(1, 0), (2, 1), (2, 4), (4, 0), (0, 1)])
+def test_stop_is_accepted_in_every_phase(rig, status):
+    rig.set_status(*status)
     rig.poll()
-    rig.command("ventilating/set", False)
+    rig.command("set", False)
     rig.poll()
-    assert sent(rig, MSG_STOP)
+    assert len(sent(rig, MSG_STOP)) == 1
 
 
-# --- ventilation --------------------------------------------------------------------
-def test_ventilate_from_off_uses_the_read_power_level(rig):
-    rig.command("ventilating/set", True)
-    rig.poll(2)
-    assert sent(rig, MSG_VENTILATE) == [bytes([0xFF, 0xFF, 8, 0xFF])]
-    assert rig.value("ventilating") is True
-
-
-def test_ventilate_rejected_when_not_off(rig, warnings):
-    rig.set_status(3, 0)
+# --- refused until bench-verified ------------------------------------------------------
+@pytest.mark.parametrize("suffix", ["ventilating/set", "clear_error/set"])
+@pytest.mark.parametrize("payload", [True, False])
+@pytest.mark.parametrize("status", [(0, 1, 0), (0, 1, 5), (3, 35, 0)])
+def test_unverified_commands_are_refused_with_one_warning(rig, suffix, payload, status, warnings):
+    rig.set_status(status[0], status[1], error=status[2])
     rig.poll()
-    rig.command("ventilating/set", True)
-    rig.poll()
-    assert not sent(rig, MSG_VENTILATE) and warnings()
+    rig.heater.received.clear()
+    rig.command(suffix, payload)
+    rig.poll(4)
+    assert {m for m, _ in rig.heater.received} == {MSG_STATUS}  # no frame, 0x0D never sent
+    assert not sent(rig, MSG_UNBLOCK) and not sent(rig, MSG_VENTILATE)
+    assert len([w for w in warnings() if "refused" in w]) == 1
 
 
 # --- settings -----------------------------------------------------------------------
@@ -144,14 +184,17 @@ def test_setpoint_writes_full_settings_and_reads_back(rig):
     rig.command("setpoint_c/set", 22)
     rig.poll()
     assert sent(rig, MSG_SETTINGS)[1] == bytes([1, 0, 4, 22, 0, 8])
+    assert len(sent(rig, MSG_SETTINGS)) == 2  # no immediate read: the next poll reads it back
+    rig.poll()
+    assert len(sent(rig, MSG_SETTINGS)) == 3
     assert rig.value("setpoint_c") == 22
 
 
 def test_mode_and_power_level_change_one_field_each(rig):
     rig.command("mode/set", "external_temperature")
-    rig.poll()
+    rig.poll(2)
     rig.command("power_level/set", 3)
-    rig.poll()
+    rig.poll(2)
     writes = [p for p in sent(rig, MSG_SETTINGS) if p]
     assert writes[0] == bytes([1, 0, 3, 16, 0, 8]) and writes[1] == bytes([1, 0, 3, 16, 0, 3])
     assert (rig.value("mode"), rig.value("power_level")) == ("external_temperature", 3)
@@ -171,28 +214,8 @@ def test_settings_allowed_while_running(rig):
     rig.set_status(3, 0)
     rig.poll()
     rig.command("power_level/set", 5)
-    rig.poll()
-    assert rig.value("power_level") == 5
-
-
-# --- clear_error ----------------------------------------------------------------------
-def test_clear_error_sends_unblock_only_with_an_error(rig):
-    rig.set_status(0, 1, error=5)
-    rig.poll()
-    rig.command("clear_error/set", True)
     rig.poll(2)
-    assert len(sent(rig, MSG_UNBLOCK)) == 1 and not sent(rig, MSG_START)
-    assert rig.value("error_code") == 0
-
-
-def test_clear_error_rejected_at_error_zero_or_false(rig, warnings):
-    rig.command("clear_error/set", True)
-    rig.poll()
-    rig.set_status(0, 1, error=5)
-    rig.poll()
-    rig.command("clear_error/set", False)
-    rig.poll()
-    assert not sent(rig, MSG_UNBLOCK) and len(warnings()) == 2
+    assert rig.value("power_level") == 5
 
 
 # --- malformed payloads ---------------------------------------------------------------
@@ -215,8 +238,6 @@ def test_clear_error_rejected_at_error_zero_or_false(rig, warnings):
         ("power_level/set", "10"),
         ("power_level/set", "-1"),
         ("power_level/set", "2.5"),
-        ("ventilating/set", "1"),
-        ("clear_error/set", "1"),
     ],
 )
 def test_malformed_commands_send_no_frame(rig, suffix, payload, warnings):
@@ -239,7 +260,8 @@ def test_unconfirmed_start_retries_once_after_three_polls_then_warns(rig, warnin
     assert len(sent(rig, MSG_START)) == 2  # one retry, no blind double-send before it
     rig.poll(10)
     assert len(sent(rig, MSG_START)) == 2
-    assert any("unconfirmed" in w for w in warnings())
+    unconfirmed = [w for w in warnings() if "unconfirmed" in w]
+    assert len(unconfirmed) == 1 and "start" in unconfirmed[0] and "off" in unconfirmed[0]
 
 
 def test_retry_that_lands_is_confirmed_without_warning(rig, warnings):
@@ -248,6 +270,31 @@ def test_retry_that_lands_is_confirmed_without_warning(rig, warnings):
     rig.poll(5)
     assert len(sent(rig, MSG_START)) == 2 and rig.value("phase") == "starting"
     assert not any("unconfirmed" in w for w in warnings())
+
+
+def test_settings_write_matching_read_back_has_no_warning(rig, warnings):
+    rig.set_status(3, 0)
+    rig.poll()
+    rig.command("setpoint_c/set", 20)
+    rig.poll(6)
+    assert rig.value("setpoint_c") == 20
+    assert not warnings()
+
+
+def test_settings_write_mismatch_warns_once_without_retry_or_new_topic(rig, warnings):
+    rig.set_status(3, 0)
+    rig.poll()
+    topics = set(rig.pub.retained)
+    rig.heater.ignore[MSG_SETTINGS] = 1  # the write is lost; the read-back shows the old value
+    rig.command("setpoint_c/set", 22)
+    rig.poll(10)
+    assert len([p for p in sent(rig, MSG_SETTINGS) if p]) == 1  # no second attempt
+    assert len(sent(rig, MSG_SETTINGS)) == 3  # connect read, write, one confirming read
+    assert rig.value("setpoint_c") == 16  # the read-back is what is published
+    assert set(rig.pub.retained) == topics
+    unconfirmed = [w for w in warnings() if "unconfirmed" in w]
+    assert len(unconfirmed) == 1
+    assert "setpoint_c" in unconfirmed[0] and "running" in unconfirmed[0]
 
 
 # --- restart ----------------------------------------------------------------------------
@@ -265,3 +312,16 @@ def test_no_recommand_after_restart(make_rig):
     assert second.value("phase") == "starting"
     assert not sent(second, MSG_START) and not sent(second, MSG_STOP)
     assert {m for m, _ in first.heater.received} <= {MSG_STATUS, MSG_SETTINGS, 0x1C, 0x04, 0x06}
+
+
+# --- init frames --------------------------------------------------------------------
+def test_default_config_sends_no_init_frames_and_enabling_it_does(make_rig):
+    from driver_autoterm.config import load_config
+
+    assert load_config().device.send_init is False
+    off = make_rig(send_init=False)
+    off.poll()
+    on = make_rig(send_init=True)
+    on.poll()
+    assert {m for m, _ in off.heater.received} == {MSG_STATUS, MSG_SETTINGS}
+    assert len(on.heater.received) > len(off.heater.received)

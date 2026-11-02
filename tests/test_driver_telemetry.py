@@ -52,16 +52,19 @@ def test_empty_name_is_not_published(make_rig):
     "code,phase",
     [
         ((0, 1), "off"),
+        ((0, 0), "off"),
         ((1, 0), "starting"),
         ((1, 1), "starting"),
+        ((2, 0), "starting"),
         ((2, 1), "starting"),
+        ((2, 2), "starting"),
+        ((2, 6), "starting"),
         ((2, 3), "starting"),
         ((2, 4), "warming_up"),
         ((3, 0), "running"),
         ((3, 35), "running"),
         ((3, 4), "shutting_down"),
         ((4, 0), "shutting_down"),
-        ((4, 7), "shutting_down"),
     ],
 )
 def test_phase_mapping(rig, code, phase):
@@ -72,11 +75,43 @@ def test_phase_mapping(rig, code, phase):
     assert rig.value("ventilating") == (True if code == (3, 35) else None)
 
 
-def test_unknown_code_is_off_with_raw_code_and_one_warning(rig, warnings):
-    rig.set_status(9, 9)
+def test_captured_cycle_never_publishes_off_between_start_and_shutdown(rig):
+    seen = []
+    for code in [(0, 1), (1, 0), (1, 1), (2, 0), (2, 1), (2, 2), (2, 6), (2, 3),
+                 (2, 4), (3, 0), (4, 0), (0, 1)]:
+        rig.set_status(*code)
+        rig.poll()
+        seen.append(rig.value("phase"))
+    assert seen == ["off"] + ["starting"] * 7 + ["warming_up", "running", "shutting_down", "off"]
+
+
+@pytest.mark.parametrize("code", [(9, 9), (4, 7), (2, 5), (3, 1)])
+def test_unknown_code_has_empty_phase_raw_code_and_one_warning(rig, warnings, code):
+    rig.set_status(*code)
     rig.poll(3)
-    assert rig.value("phase") == "off" and rig.value("status_code") == "9.9"
-    assert sum("9.9" in w for w in warnings()) == 1
+    raw = f"{code[0]}.{code[1]}"
+    assert rig.value("phase") is None and rig.value("status_code") == raw
+    assert sum(raw in w for w in warnings()) == 1
+
+
+def test_unknown_code_refuses_start_and_accepts_stop(rig):
+    rig.set_status(9, 9)
+    rig.poll()
+    rig.command("set", True)
+    rig.poll()
+    assert rig.frames(0x01) == []
+    rig.command("set", False)
+    rig.poll()
+    assert len(rig.frames(0x03)) >= 1
+
+
+@pytest.mark.parametrize(
+    "major,minor,phase", [(3, 0, "running"), (2, 4, "warming_up"), (0, 1, "off")]
+)
+def test_error_code_does_not_change_phase(rig, major, minor, phase):
+    rig.set_status(major, minor, error=30)
+    rig.poll()
+    assert rig.value("phase") == phase and rig.value("error_code") == 30
 
 
 def test_scaling(rig):
