@@ -28,7 +28,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    uses: renewvan/hub/.github/workflows/release.yml@eb9ad8a4b29519bbbd1c33b1092cdb7719628ec9
+    uses: renewvan/hub/.github/workflows/release.yml@51b0c2432385accd651df0d8e63fd495b5ac6bdc
     with:
       kind: image
       image: driver-autoterm
