@@ -18,8 +18,8 @@ from driver_autoterm.config import MqttConfig
 
 logger = logging.getLogger(__name__)
 
-HEALTH_TOPIC = "renewvan/heater/health"
-INFO_TOPIC = "renewvan/heater/info"
+HEALTH_TOPIC = "renewvan/autoterm/health"
+INFO_TOPIC = "renewvan/autoterm/info"
 
 
 class Publisher:
