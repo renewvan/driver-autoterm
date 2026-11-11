@@ -45,6 +45,7 @@ COMMAND_TOPICS = (
     "power_level/set",
     "ventilating/set",
     "clear_error/set",
+    "commands_enabled/set",
 )
 LIVE_FIELDS = (
     "phase",
@@ -125,6 +126,9 @@ class HeaterDriver:
         self._pub = publisher
         self._open_stream = open_stream
         self._clock = clock
+        # Runtime switch, seeded from the config file. `commands_enabled/set` flips it for this run
+        # only, so a restart falls back to the file (fail closed).
+        self._commands_enabled = config.commands_enabled
         self._link: HeaterLink | None = None
         self._commands: queue.Queue[tuple[str, str]] = queue.Queue()
         self._unknown_codes: set[str] = set()
@@ -139,7 +143,7 @@ class HeaterDriver:
         if self._cfg.name:
             self._pub.publish(_topic(self._cfg.id, "name"), json.dumps(self._cfg.name))
         self._pub.publish(
-            _topic(self._cfg.id, "commands_enabled"), json.dumps(self._cfg.commands_enabled)
+            _topic(self._cfg.id, "commands_enabled"), json.dumps(self._commands_enabled)
         )
         # Retained values from a previous run must not outlive this one's knowledge.
         self._clear_live()
@@ -310,8 +314,23 @@ class HeaterDriver:
                 logger.warning("Serial error handling %s: %s", suffix, exc)
                 self._drop_link()
 
+    def _set_commands_enabled(self, payload: str) -> None:
+        """The one command accepted while commands are off, since it is what turns them on."""
+        try:
+            value = json.loads(payload)
+        except json.JSONDecodeError:
+            raise Rejected(f"invalid JSON {payload!r}") from None
+        self._expect_bool(value)
+        if value != self._commands_enabled:
+            logger.warning("commands_enabled set to %s over MQTT (until restart)", value)
+        self._commands_enabled = value
+        self._pub.publish(_topic(self._cfg.id, "commands_enabled"), json.dumps(value))
+
     def _execute(self, suffix: str, payload: str) -> None:
-        if not self._cfg.commands_enabled:
+        if suffix == "commands_enabled/set":
+            self._set_commands_enabled(payload)
+            return
+        if not self._commands_enabled:
             raise Rejected("commands_enabled is false")
         if self._stale or not self._synced or self._status is None or self._settings is None:
             raise Rejected("heater state is stale or not yet synced")

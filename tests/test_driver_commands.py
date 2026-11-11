@@ -35,6 +35,35 @@ def test_commands_disabled_publishes_telemetry_but_rejects_everything(make_rig, 
     assert sum("commands_enabled is false" in w for w in warnings()) == 7
 
 
+def test_commands_enabled_set_turns_commands_on_and_off(make_rig, warnings):
+    rig = make_rig(commands_enabled=False)
+    rig.poll()
+    rig.command("commands_enabled/set", True)
+    rig.poll()
+    assert rig.value("commands_enabled") is True
+    rig.command("set", False)
+    rig.poll()
+    assert sent(rig, MSG_STOP)
+    rig.command("commands_enabled/set", False)
+    rig.poll()
+    assert rig.value("commands_enabled") is False
+    before = len(sent(rig, MSG_STOP))
+    rig.command("set", False)
+    rig.poll()
+    assert len(sent(rig, MSG_STOP)) == before
+    assert any("commands_enabled is false" in w for w in warnings())
+
+
+@pytest.mark.parametrize("payload", ["1", '"true"', "nope"])
+def test_commands_enabled_set_rejects_a_non_boolean(make_rig, payload, warnings):
+    rig = make_rig(commands_enabled=False)
+    rig.poll()
+    rig.command("commands_enabled/set", payload, raw=True)
+    rig.poll()
+    assert rig.value("commands_enabled") is False
+    assert any("Rejected command" in w for w in warnings())
+
+
 def test_commands_rejected_until_synced(make_rig, warnings):
     rig = make_rig()
     rig.command("set", True)  # before the first poll: nothing read yet

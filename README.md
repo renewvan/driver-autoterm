@@ -32,7 +32,9 @@ Unretained, strict JSON, under `renewvan/heater/<id>/`: `set` (`true` start / `f
 WARNING, no frame sent) until their frames are bench-verified, and the `0x0D` unblock is never
 exposed. Every command, stop included, is also rejected earlier (WARNING, no frame) when
 `commands_enabled` is false or the state is stale or not yet synced; the `3.35`/`3.4` phase defaults
-are unverified. A rejected or unconfirmed command is logged at WARNING with the command and phase; there is
+are unverified. `commands_enabled/set` (`true`/`false`) is the one command accepted while commands are
+off: it flips the switch for this run only and republishes `commands_enabled`; a restart returns to
+`config.ini`. A rejected or unconfirmed command is logged at WARNING with the command and phase; there is
 no reply topic. Stop is retried at most 3 times, 3 polls apart, then one ERROR, and is never gated
 by phase. Confirmation is the retained field changing (settings: the next `0x02` read). The Driver
 never stops or re-commands the heater on its own, including after a restart.
