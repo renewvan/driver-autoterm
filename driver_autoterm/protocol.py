@@ -2,7 +2,7 @@
 
 Frame: AA <device> <payload_len> 00 <msg> <payload> <crc_hi> <crc_lo>, the CRC
 covering everything before it. Requests use device 0x03, replies 0x04 (init and
-unblock acks use 0x00). See .scratch/driver-autoterm/research in the hub repo.
+unblock acks use 0x00).
 """
 
 from __future__ import annotations

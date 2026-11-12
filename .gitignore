@@ -4,3 +4,6 @@
 /config.ini
 /state/
 __pycache__/
+
+# Local scratch notes; never committed
+.scratch/
