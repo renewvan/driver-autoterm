@@ -28,8 +28,9 @@ All under `renewvan/heater/<id>/`, retained, JSON. Unknown is an empty retained 
 
 Unretained, strict JSON, under `renewvan/heater/<id>/`: `set` (`true` start / `false` stop),
 `mode/set` (`"heater_temperature"`, `"external_temperature"`, `"power"`), `setpoint_c/set` (integer
-1-30), `power_level/set` (integer 0-9). `ventilating/set` and `clear_error/set` are **refused** (one
-WARNING, no frame sent) until their frames are bench-verified, and the `0x0D` unblock is never
+1-30), `power_level/set` (integer 0-9). `ventilating/set` (`true` starts fan-only from off at the read power level, `false` stops) is
+**not yet bench-verified**. `clear_error/set` is **refused** (one WARNING, no frame sent) until its
+frame is bench-verified, and the `0x0D` unblock is never
 exposed. Every command, stop included, is also rejected earlier (WARNING, no frame) when
 `commands_enabled` is false or the state is stale or not yet synced; the `3.35`/`3.4` phase defaults
 are unverified. `commands_enabled/set` (`true`/`false`) is the one command accepted while commands are
@@ -59,7 +60,8 @@ throughout). Init is not needed, so `send_init` defaults off.
 
 Still unverified; each is blocked or refused until a human-present bench check:
 
-- status codes `3.35` (fan-only) and `3.4` (kept as flagged defaults), so `ventilating/set` is refused;
+- status codes `3.35` (fan-only) and `3.4` (kept as flagged defaults), and the `0x23` ventilate frame
+  behind `ventilating/set`, so the first real send needs a human-present bench check;
 - the `0x0D` unblock (never exposed) and the `clear_error` frame (refused);
 - live settings changes (`mode`, `setpoint_c`, `power_level`), the 1-30 setpoint bounds, and
   confirmation by the next `0x02` read;

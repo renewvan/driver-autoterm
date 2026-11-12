@@ -26,6 +26,7 @@ from driver_autoterm.protocol import (
     MSG_START,
     MSG_STATUS,
     MSG_STOP,
+    MSG_VENTILATE,
     MSG_VERSION,
     Settings,
     Status,
@@ -87,7 +88,7 @@ PHASES: dict[tuple[int, int], str] = {
 
 
 # Frames not yet bench-verified on a real heater; the 0x0D unblock is never sent.
-_REFUSED_COMMANDS = frozenset({"ventilating/set", "clear_error/set"})
+_REFUSED_COMMANDS = frozenset({"clear_error/set"})
 
 
 def _topic(device_id: str, prop: str) -> str:
@@ -346,7 +347,7 @@ class HeaterDriver:
         ventilating = (status.major, status.minor) == (3, 35)
         settings = self._settings
 
-        stopping = suffix == "set" and value is False
+        stopping = suffix in ("set", "ventilating/set") and value is False
         if phase is None and not stopping:
             raise Rejected(f"unknown status code {status.status_code}: only stop is accepted")
 
@@ -354,6 +355,12 @@ class HeaterDriver:
             self._expect_bool(value)
             if value:
                 self._start(status, phase, ventilating, settings)
+            else:
+                self._stop()
+        elif suffix == "ventilating/set":
+            self._expect_bool(value)
+            if value:
+                self._ventilate(phase, settings)
             else:
                 self._stop()
         else:
@@ -376,6 +383,17 @@ class HeaterDriver:
             lambda: self._send(MSG_START, encode_settings(settings)),
             lambda s, _st: self._phase(s) != "off",
             name="start",
+        )
+
+    def _ventilate(self, phase: str | None, settings: Settings) -> None:
+        """Fan-only (status 3.35), from off only, at the power level the heater reported."""
+        if phase != "off":
+            raise Rejected(f"cannot ventilate from phase {phase}")
+        level = settings.power_level
+        self._send_pending(
+            lambda: self._send(MSG_VENTILATE, bytes([0xFF, 0xFF, level, 0xFF])),
+            lambda s, _st: self._phase(s) != "off",
+            name="ventilate",
         )
 
     def _stop(self) -> None:
