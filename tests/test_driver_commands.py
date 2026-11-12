@@ -194,7 +194,7 @@ def test_stop_is_accepted_in_every_phase(rig, status):
 
 
 # --- refused until bench-verified ------------------------------------------------------
-@pytest.mark.parametrize("suffix", ["ventilating/set", "clear_error/set"])
+@pytest.mark.parametrize("suffix", ["clear_error/set"])
 @pytest.mark.parametrize("payload", [True, False])
 @pytest.mark.parametrize("status", [(0, 1, 0), (0, 1, 5), (3, 35, 0)])
 def test_unverified_commands_are_refused_with_one_warning(rig, suffix, payload, status, warnings):
@@ -204,8 +204,32 @@ def test_unverified_commands_are_refused_with_one_warning(rig, suffix, payload, 
     rig.command(suffix, payload)
     rig.poll(4)
     assert {m for m, _ in rig.heater.received} == {MSG_STATUS}  # no frame, 0x0D never sent
-    assert not sent(rig, MSG_UNBLOCK) and not sent(rig, MSG_VENTILATE)
+    assert not sent(rig, MSG_UNBLOCK)
     assert len([w for w in warnings() if "refused" in w]) == 1
+
+
+# --- ventilation --------------------------------------------------------------------
+def test_ventilate_from_off_uses_the_read_power_level(rig):
+    rig.command("ventilating/set", True)
+    rig.poll(2)
+    assert sent(rig, MSG_VENTILATE) == [bytes([0xFF, 0xFF, 8, 0xFF])]
+    assert rig.value("ventilating") is True
+
+
+def test_ventilate_rejected_when_not_off(rig, warnings):
+    rig.set_status(3, 0)
+    rig.poll()
+    rig.command("ventilating/set", True)
+    rig.poll()
+    assert not sent(rig, MSG_VENTILATE) and warnings()
+
+
+def test_ventilating_false_is_a_stop(rig):
+    rig.set_status(3, 35)
+    rig.poll()
+    rig.command("ventilating/set", False)
+    rig.poll()
+    assert sent(rig, MSG_STOP)
 
 
 # --- settings -----------------------------------------------------------------------
@@ -267,6 +291,7 @@ def test_settings_allowed_while_running(rig):
         ("power_level/set", "10"),
         ("power_level/set", "-1"),
         ("power_level/set", "2.5"),
+        ("ventilating/set", "1"),
     ],
 )
 def test_malformed_commands_send_no_frame(rig, suffix, payload, warnings):
@@ -354,3 +379,17 @@ def test_default_config_sends_no_init_frames_and_enabling_it_does(make_rig):
     on.poll()
     assert {m for m, _ in off.heater.received} == {MSG_STATUS, MSG_SETTINGS}
     assert len(on.heater.received) > len(off.heater.received)
+
+
+# --- settings payload logging ---------------------------------------------------------
+def test_a_settings_change_is_logged_with_the_raw_bytes(rig, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    rig.poll()
+    rig.command("power_level/set", 5)
+    rig.poll(2)
+    changed = [r.getMessage() for r in caplog.records if "Heater settings changed" in r.getMessage()]
+    assert len(changed) == 1 and "->" in changed[0]
+    rig.poll(2)
+    assert len([r for r in caplog.records if "Heater settings changed" in r.getMessage()]) == 1

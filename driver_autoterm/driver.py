@@ -26,6 +26,7 @@ from driver_autoterm.protocol import (
     MSG_START,
     MSG_STATUS,
     MSG_STOP,
+    MSG_VENTILATE,
     MSG_VERSION,
     Settings,
     Status,
@@ -87,7 +88,7 @@ PHASES: dict[tuple[int, int], str] = {
 
 
 # Frames not yet bench-verified on a real heater; the 0x0D unblock is never sent.
-_REFUSED_COMMANDS = frozenset({"ventilating/set", "clear_error/set"})
+_REFUSED_COMMANDS = frozenset({"clear_error/set"})
 
 
 def _topic(device_id: str, prop: str) -> str:
@@ -132,6 +133,7 @@ class HeaterDriver:
         self._link: HeaterLink | None = None
         self._commands: queue.Queue[tuple[str, str]] = queue.Queue()
         self._unknown_codes: set[str] = set()
+        self._last_settings_raw: bytes | None = None
         self._started_at = clock()
         self._reset_link_state()
         self._last_valid: float | None = None
@@ -227,8 +229,7 @@ class HeaterDriver:
         if self._cfg.send_init:
             for msg in (MSG_INIT, MSG_SERIAL, MSG_VERSION):
                 link.transact(msg)  # replies are read and discarded; a missing one is tolerated
-        reply = link.transact(MSG_SETTINGS)
-        settings = parse_settings(reply.payload) if reply else None
+        settings = self._parse_settings_reply(link.transact(MSG_SETTINGS))
         if settings is None:
             logger.warning("Heater did not report its settings; will retry")
             return None
@@ -346,7 +347,7 @@ class HeaterDriver:
         ventilating = (status.major, status.minor) == (3, 35)
         settings = self._settings
 
-        stopping = suffix == "set" and value is False
+        stopping = suffix in ("set", "ventilating/set") and value is False
         if phase is None and not stopping:
             raise Rejected(f"unknown status code {status.status_code}: only stop is accepted")
 
@@ -354,6 +355,12 @@ class HeaterDriver:
             self._expect_bool(value)
             if value:
                 self._start(status, phase, ventilating, settings)
+            else:
+                self._stop()
+        elif suffix == "ventilating/set":
+            self._expect_bool(value)
+            if value:
+                self._ventilate(phase, settings)
             else:
                 self._stop()
         else:
@@ -376,6 +383,17 @@ class HeaterDriver:
             lambda: self._send(MSG_START, encode_settings(settings)),
             lambda s, _st: self._phase(s) != "off",
             name="start",
+        )
+
+    def _ventilate(self, phase: str | None, settings: Settings) -> None:
+        """Fan-only (status 3.35), from off only, at the power level the heater reported."""
+        if phase != "off":
+            raise Rejected(f"cannot ventilate from phase {phase}")
+        level = settings.power_level
+        self._send_pending(
+            lambda: self._send(MSG_VENTILATE, bytes([0xFF, 0xFF, level, 0xFF])),
+            lambda s, _st: self._phase(s) != "off",
+            name="ventilate",
         )
 
     def _stop(self) -> None:
@@ -421,9 +439,26 @@ class HeaterDriver:
 
     def _read_settings(self) -> None:
         reply = self._ensure_link().transact(MSG_SETTINGS)
-        settings = parse_settings(reply.payload) if reply else None
+        settings = self._parse_settings_reply(reply)
         if settings is not None:
             self._settings = settings
+
+    def _parse_settings_reply(self, reply) -> Settings | None:  # noqa: ANN001 - link Frame or None
+        """Parse a 0x02 reply and log its raw bytes: DEBUG always, INFO when they change.
+
+        The raw bytes are how modes the driver cannot command yet (thermostat, heat + ventilation,
+        picked on the panel) are told apart from the ones it knows.
+        """
+        if reply is None:
+            return None
+        raw = bytes(reply.payload)
+        logger.debug("Settings (0x02) payload: %s", raw.hex(" "))
+        if self._last_settings_raw is not None and raw != self._last_settings_raw:
+            logger.info(
+                "Heater settings changed: %s -> %s", self._last_settings_raw.hex(" "), raw.hex(" ")
+            )
+        self._last_settings_raw = raw
+        return parse_settings(reply.payload)
 
     def _send_pending(
         self,
