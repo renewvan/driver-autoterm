@@ -72,6 +72,13 @@ Still unverified; each is blocked or refused until a human-present bench check:
 - which fan byte is right (11 commanded, 12 measured; `fan_rpm` uses 12);
 - `external_temperature` mode and the probe reading (no probe installed).
 
+## Finding the bytes of other modes
+
+The settings reply (`0x02`) is logged raw: `Heater settings changed: <old> -> <new>` at INFO whenever it
+differs from the last read, and every payload at DEBUG (`-d`). Pick Thermostat or Heat + ventilation on
+the Comfort Control panel with the heater off and read the changed bytes, in the order `use_work_time,
+work_time, mode, setpoint, wait_mode, power`. The driver only sends mode codes 1, 3 and 4.
+
 ## Development
 
 ```bash

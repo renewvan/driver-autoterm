@@ -133,6 +133,7 @@ class HeaterDriver:
         self._link: HeaterLink | None = None
         self._commands: queue.Queue[tuple[str, str]] = queue.Queue()
         self._unknown_codes: set[str] = set()
+        self._last_settings_raw: bytes | None = None
         self._started_at = clock()
         self._reset_link_state()
         self._last_valid: float | None = None
@@ -228,8 +229,7 @@ class HeaterDriver:
         if self._cfg.send_init:
             for msg in (MSG_INIT, MSG_SERIAL, MSG_VERSION):
                 link.transact(msg)  # replies are read and discarded; a missing one is tolerated
-        reply = link.transact(MSG_SETTINGS)
-        settings = parse_settings(reply.payload) if reply else None
+        settings = self._parse_settings_reply(link.transact(MSG_SETTINGS))
         if settings is None:
             logger.warning("Heater did not report its settings; will retry")
             return None
@@ -439,9 +439,26 @@ class HeaterDriver:
 
     def _read_settings(self) -> None:
         reply = self._ensure_link().transact(MSG_SETTINGS)
-        settings = parse_settings(reply.payload) if reply else None
+        settings = self._parse_settings_reply(reply)
         if settings is not None:
             self._settings = settings
+
+    def _parse_settings_reply(self, reply) -> Settings | None:  # noqa: ANN001 - link Frame or None
+        """Parse a 0x02 reply and log its raw bytes: DEBUG always, INFO when they change.
+
+        The raw bytes are how modes the driver cannot command yet (thermostat, heat + ventilation,
+        picked on the panel) are told apart from the ones it knows.
+        """
+        if reply is None:
+            return None
+        raw = bytes(reply.payload)
+        logger.debug("Settings (0x02) payload: %s", raw.hex(" "))
+        if self._last_settings_raw is not None and raw != self._last_settings_raw:
+            logger.info(
+                "Heater settings changed: %s -> %s", self._last_settings_raw.hex(" "), raw.hex(" ")
+            )
+        self._last_settings_raw = raw
+        return parse_settings(reply.payload)
 
     def _send_pending(
         self,

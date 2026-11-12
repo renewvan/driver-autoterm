@@ -379,3 +379,17 @@ def test_default_config_sends_no_init_frames_and_enabling_it_does(make_rig):
     on.poll()
     assert {m for m, _ in off.heater.received} == {MSG_STATUS, MSG_SETTINGS}
     assert len(on.heater.received) > len(off.heater.received)
+
+
+# --- settings payload logging ---------------------------------------------------------
+def test_a_settings_change_is_logged_with_the_raw_bytes(rig, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    rig.poll()
+    rig.command("power_level/set", 5)
+    rig.poll(2)
+    changed = [r.getMessage() for r in caplog.records if "Heater settings changed" in r.getMessage()]
+    assert len(changed) == 1 and "->" in changed[0]
+    rig.poll(2)
+    assert len([r for r in caplog.records if "Heater settings changed" in r.getMessage()]) == 1
