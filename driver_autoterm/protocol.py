@@ -121,9 +121,16 @@ def parse_status(payload: bytes) -> Status | None:
 
 @dataclass(frozen=True)
 class Settings:
+    """The 6-byte 0x02 payload. Only mode, setpoint and power level are understood; the other
+    three bytes (work time, and `wait_mode`, the likely Thermostat switch) are kept as read so a
+    write never undoes what was picked on the panel."""
+
     mode_code: int
     setpoint_c: int
     power_level: int
+    use_work_time: int = 0x01
+    work_time: int = 0x00
+    wait_mode: int = 0x00
 
     @property
     def mode(self) -> str | None:
@@ -133,9 +140,25 @@ class Settings:
 def parse_settings(payload: bytes) -> Settings | None:
     if len(payload) != 6:
         return None
-    return Settings(mode_code=payload[2], setpoint_c=payload[3], power_level=payload[5])
+    return Settings(
+        mode_code=payload[2],
+        setpoint_c=payload[3],
+        power_level=payload[5],
+        use_work_time=payload[0],
+        work_time=payload[1],
+        wait_mode=payload[4],
+    )
 
 
 def encode_settings(settings: Settings) -> bytes:
-    """use_work_time = no (1), work_time = 0, wait_mode = 0."""
-    return bytes([0x01, 0x00, settings.mode_code, settings.setpoint_c, 0x00, settings.power_level])
+    """The payload as read back, with only mode, setpoint and power level changed by the caller."""
+    return bytes(
+        [
+            settings.use_work_time,
+            settings.work_time,
+            settings.mode_code,
+            settings.setpoint_c,
+            settings.wait_mode,
+            settings.power_level,
+        ]
+    )
