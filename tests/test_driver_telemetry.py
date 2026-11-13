@@ -63,7 +63,8 @@ def test_empty_name_is_not_published(make_rig):
         ((2, 4), "warming_up"),
         ((3, 0), "running"),
         ((3, 35), "running"),
-        ((3, 4), "shutting_down"),
+        ((3, 4), "standby"),
+        ((3, 5), "standby"),
         ((4, 0), "shutting_down"),
     ],
 )

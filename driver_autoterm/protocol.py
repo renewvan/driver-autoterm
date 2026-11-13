@@ -29,6 +29,12 @@ EXTERNAL_ABSENT = 0x7F
 MODE_BY_CODE = {1: "heater_temperature", 3: "external_temperature", 4: "power"}
 CODE_BY_MODE = {name: code for code, name in MODE_BY_CODE.items()}
 
+# wait_mode byte (bench-verified on an AIR 2D, 2026-11-13): 1 is Thermostat (above the setpoint the
+# burner stops, status 3.4 then 3.5, and re-ignites when the temperature drops), 2 keeps burning and
+# turns the fuel down. 0 is "keep the current value" on a write, like 0 in any byte.
+WAIT_MODE_THERMOSTAT_ON = 0x01
+WAIT_MODE_THERMOSTAT_OFF = 0x02
+
 
 def crc16_modbus(data: bytes) -> int:
     crc = 0xFFFF
@@ -121,9 +127,10 @@ def parse_status(payload: bytes) -> Status | None:
 
 @dataclass(frozen=True)
 class Settings:
-    """The 6-byte 0x02 payload. Only mode, setpoint and power level are understood; the other
-    three bytes (work time, and `wait_mode`, the likely Thermostat switch) are kept as read so a
-    write never undoes what was picked on the panel."""
+    """The 6-byte 0x02 payload. Mode, setpoint, power level and `wait_mode` (the Thermostat switch)
+    are understood; the work-time bytes are kept as read so a write never undoes what was picked on
+    the panel. The heater stores any byte value it is sent, so a read-back proves only storage.
+    Running in a temperature mode, it rewrites `power_level` with the level it burns at."""
 
     mode_code: int
     setpoint_c: int
@@ -135,6 +142,11 @@ class Settings:
     @property
     def mode(self) -> str | None:
         return MODE_BY_CODE.get(self.mode_code)
+
+    @property
+    def thermostat(self) -> bool | None:
+        """True for wait_mode 1, False for 2, None for anything else (0 is a never-set heater)."""
+        return {WAIT_MODE_THERMOSTAT_ON: True, WAIT_MODE_THERMOSTAT_OFF: False}.get(self.wait_mode)
 
 
 def parse_settings(payload: bytes) -> Settings | None:
