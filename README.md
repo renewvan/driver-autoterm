@@ -115,6 +115,10 @@ differs from the last read, and every payload at DEBUG (`-d`). Pick a mode on th
 heater off and read the changed bytes, in the order `use_work_time, work_time, mode, setpoint,
 wait_mode, power`. The driver only sends mode codes 1, 3 and 4.
 
+The step-by-step session for the PU-27 panel (its Ventilation toggle, its By T modes and its run
+time) is [`docs/bench-pu27-settings.md`](docs/bench-pu27-settings.md). The panel and the adapter are
+never connected at the same time, and the panel is swapped only with the heater off.
+
 ## Development
 
 ```bash
