@@ -96,8 +96,8 @@ PHASES: dict[tuple[int, int], str] = {
 }
 
 
-# Frames not yet bench-verified on a real heater; the 0x0D unblock is never sent.
-_REFUSED_COMMANDS = frozenset({"clear_error/set"})
+# The 0x0D unblock is never sent on its own. `clear_error/set` sends only the frame named by
+# `clear_error_frame` (captured from the panel, docs/bench-clear-error.md), refused without it.
 
 
 def _topic(device_id: str, prop: str) -> str:
@@ -360,8 +360,10 @@ class HeaterDriver:
             raise Rejected("commands_enabled is false")
         if self._stale or not self._synced or self._status is None or self._settings is None:
             raise Rejected("heater state is stale or not yet synced")
-        if suffix in _REFUSED_COMMANDS:
-            raise Rejected(f"{suffix} is refused until its frame is bench-verified")
+        if suffix == "clear_error/set" and self._cfg.clear_error_frame is None:
+            raise Rejected(
+                f"{suffix} is refused until its frame is bench-verified (clear_error_frame unset)"
+            )
         try:
             value = json.loads(payload)
         except json.JSONDecodeError:
@@ -388,6 +390,8 @@ class HeaterDriver:
                 self._ventilate(phase, settings)
             else:
                 self._stop()
+        elif suffix == "clear_error/set":
+            self._clear_error(value, status, phase)
         else:
             self._settings_command(suffix, value, phase, ventilating, settings)
 
@@ -437,6 +441,37 @@ class HeaterDriver:
             self._phase(status),
         )
         return True
+
+    def _clear_error(self, value: object, status: Status, phase: str | None) -> None:
+        """Send the configured clear frame, from off with a fault only; confirmed by error 0."""
+        if value is not True:
+            raise Rejected(f"expected true, got {value!r}")
+        if phase != "off":
+            raise Rejected(f"cannot clear an error in phase {phase}")
+        if status.error_code == 0:
+            logger.info("Clear error ignored: heater reports no error")
+            return
+        assert self._cfg.clear_error_frame is not None
+        msg, payload = self._cfg.clear_error_frame
+        logger.info(
+            "Clearing error %d with frame %s", status.error_code, bytes([msg, *payload]).hex(" ")
+        )
+        self._send_pending(
+            lambda: self._send(msg, payload), self._clear_confirmed, name="clear_error"
+        )
+
+    def _clear_confirmed(self, status: Status, _settings: Settings | None) -> bool:
+        """Error 0 while off confirms. Leaving off ends the wait with one ERROR and no retry: a
+        frame that moved the heater out of off must not be sent again (as for ventilate)."""
+        phase = self._phase(status)
+        if phase != "off":
+            logger.error(
+                "clear_error answered with status %s (phase %s), not off: not retrying",
+                status.status_code,
+                phase,
+            )
+            return True
+        return status.error_code == 0
 
     def _stop(self) -> None:
         self._stop_pending = True
