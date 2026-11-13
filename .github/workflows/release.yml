@@ -33,6 +33,8 @@ jobs:
     with:
       kind: image
       image: driver-autoterm
+      # Bakes the tag into the image as DRIVER_VERSION; without it the Driver info reports "dev".
+      driver-version-arg: true
       python-version: "3.12"
       test-command: pip install -r requirements.txt -r requirements-test.txt && pytest tests/ -v --tb=short
       bump: ${{ inputs.bump }}

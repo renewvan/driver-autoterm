@@ -95,12 +95,19 @@ Still unverified; each is blocked or refused until a human-present bench check:
 - error byte versus displayed code (`0x1E` = 30 is High confidence from the manual, wire equals
   display is Medium);
 - which fan byte is right (11 commanded, 12 measured; `fan_rpm` uses 12);
-- `external_temperature` mode and the probe reading (no probe installed).
+- `external_temperature` mode and the probe reading (no probe installed);
+- **whether `wait_mode` 1 is Thermostat or Heat + ventilation.** The Comfort Control manual (§3.3,
+  06.2021 v1.20) says Thermostat "shuts off the combustion process and ventilation" at the target
+  (default: off at +1 °C, on again after a 2 °C drop), while Heat + ventilation shuts off combustion
+  and "start[s] to ventilate" until 5 °C below the target. In the 2026-11-13 run, `wait_mode` 1 sat in
+  3.5 with `fan_rpm` about 2400 and no fuel: that matches Heat + ventilation, unless the fan byte is
+  wrong (above). Check at the heater: in 3.5, is air still blowing? Then run `wait_mode` 3.
 
 ## Finding the bytes of other modes
 
-Heat + ventilation (Comfort Control panel) was not found: `wait_mode` 2 kept burning, and 3 was
-never tried in a run. Mode 2 (panel sensor) is stored but not exposed: it needs the panel's sensor.
+Heat + ventilation (Comfort Control panel) is not offered: `wait_mode` 2 kept burning (Temperature),
+and 3 was never tried in a run. It may in fact be `wait_mode` 1 (see Unverified assumptions). Mode 2
+(panel sensor) is stored but not exposed: it needs the panel's sensor.
 
 The settings (`0x02`) are re-read every 5 polls, so a change made on the panel is published within
 about 5 s. The reply is logged raw: `Heater settings changed: <old> -> <new>` at INFO whenever it
