@@ -161,6 +161,60 @@ minute count is 256 min (4 h 16 min), so a long run might stop by itself.
 | C3 | longest / unlimited | |
 | C4 | running, one minute apart | |
 
+## Part D: the room-temperature feed (`0x11`, mode 2)
+
+This answers the bench questions of hub ADR 0031 (proposed): does the heater regulate on a
+temperature sent to it as the panel's reading, and what does it do when the readings stop?
+
+The Driver cannot send `0x11`, so `tools/bench_room_feed.py` stands in for the panel for one run.
+It starts the heater in mode 2 with your setpoint, sends the `0x11` values of a plan, polls status
+every second (as the panel does), and prints one line per second. It always ends with a stop and
+keeps polling until the heater is back to `0.x`: at the end of the plan, on **Ctrl-C** (the abort
+for this part), or on any error. The dashboard cannot stop the heater during Part D, because the
+Driver is stopped, and the panel must not be plugged in while the heater runs. Ctrl-C is therefore
+the only abort, so keep the terminal in front of you. A second Ctrl-C exits at once, and the
+heater then stops by itself with error 30 after a few minutes, latched until a power cycle.
+
+Needs: heater **off** (`0.1`) with error 0, the adapter connected, the panel unplugged, the Driver
+stopped, and the room temperature written down (the dashboard's DS18B20) before you stop the
+Driver.
+
+1. Copy the tool to the Pi once:
+
+   ```bash
+   scp tools/bench_room_feed.py renewvan:/tmp/bench_room_feed.py
+   ssh renewvan "$COMPOSE stop driver-autoterm"
+   ```
+
+2. Run each plan below, waiting at least 5-10 s at `0.1` between runs. `-t` keeps Ctrl-C working.
+   Each run's output goes to a log file:
+
+   ```bash
+   RUN='docker compose -f /opt/renewvan/hub/docker-compose.yml --profile autoterm run --rm --no-deps -v /tmp/bench_room_feed.py:/app/bench_room_feed.py --entrypoint python driver-autoterm /app/bench_room_feed.py'
+   ssh -t renewvan "$RUN --setpoint 20 --plan <plan>" | tee "room-feed-$(date +%Y%m%d-%H%M).log"
+   ```
+
+   | Run | `--plan` | What it answers |
+   |---|---|---|
+   | D1 | `none:240` | A mode 2 start with no `0x11` at all: refused, an error, or a start on the heater's own sensor? |
+   | D2 | `10:480,28:480` | Regulation: with "room 10 °C" the power should go up; after the switch to "28 °C" it should drop to minimum or pause (`3.4`/`3.5`). |
+   | D3 | `10:480,none:900` | **Loss of the feed while heating:** what happens in the 15 min after the readings stop? Write down the time of every change. |
+
+3. Afterwards start the Driver again and check the dashboard shows the heater `off`, error 0:
+
+   ```bash
+   ssh renewvan "$COMPOSE start driver-autoterm"
+   ```
+
+   The runs leave the heater in mode 2. Set the mode back from the dashboard (for example heater
+   temperature) before the next normal start.
+
+| Run | First status after the start | `echo` (heater acks `0x11`?) | Power / pump with feed 10 → 28 | After the feed stops (D3) |
+|---|---|---|---|---|
+| D1 | | | | |
+| D2 | | | | |
+| D3 | | | | |
+
 ## Reading the result
 
 - A1 shows `01` and B1 blows air in standby: `01` is the panel's "Ventilation on", that is Heat +
@@ -171,6 +225,10 @@ minute count is 256 min (4 h 16 min), so a long run might stop by itself.
 - A3-A5 confirm the mode codes 1-4 against the panel's names.
 - C1-C3 give the run-time encoding. If C4 counts down, the heater enforces the run time itself and
   reports what is left, which is what an "off after N minutes" timer on the dashboard can use.
+- D2 shows the power following the fed value: mode 2 regulates on `0x11`, and ADR 0031 can go on.
+  D3 decides it. If the heater stops, errors or falls back to its own sensor once the readings
+  stop, that is safe without the Driver acting, and ADR 0031 can be accepted. If it keeps heating
+  on the last value, ADR 0031 is reworked (or rejected in favour of a hub-plugin thermostat).
 
 Afterwards leave the adapter connected and the Driver running; power-cycle the heater (while off)
 if the Driver logs `Heater did not report its settings` for more than a few seconds. Record the
