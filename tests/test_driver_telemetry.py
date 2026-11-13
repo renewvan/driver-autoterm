@@ -162,12 +162,14 @@ def test_recovers_and_resyncs_after_silence(rig):
     assert rig.value("phase") == "off"
 
 
-def test_published_values_validate_against_the_hub_schema(rig):
+@pytest.mark.parametrize("code,wait_mode", [((3, 35), 0), ((3, 5), 1), ((3, 0), 2)])
+def test_published_values_validate_against_the_hub_schema(rig, code, wait_mode):
     jsonschema = pytest.importorskip("jsonschema")
     if not SCHEMA.exists():
         pytest.skip("hub repo not checked out beside driver-autoterm")
-    rig.set_status(3, 35)
-    rig.poll()
+    rig.heater.settings = bytes([1, 0, 1, 16, wait_mode, 8])
+    rig.set_status(*code)
+    rig.poll(5)
     entity = {
         n: rig.value(n)
         for n in (
@@ -186,6 +188,7 @@ def test_published_values_validate_against_the_hub_schema(rig):
             "mode",
             "setpoint_c",
             "power_level",
+            "thermostat",
             "commands_enabled",
         )
         if rig.value(n) is not None
