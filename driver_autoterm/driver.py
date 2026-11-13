@@ -12,7 +12,7 @@ import logging
 import os
 import queue
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from driver_autoterm.config import AppConfig, DeviceConfig
@@ -68,6 +68,9 @@ CONFIRM_POLLS = 3
 # Stop is sent at most this many times, STOP_RETRY_POLLS polls apart, then one ERROR.
 STOP_ATTEMPTS = 3
 STOP_RETRY_POLLS = 3
+# The settings (0x02) are re-read every this many polls, so a change made on the panel is
+# published and logged; every command that writes them also reads them fresh first.
+SETTINGS_EVERY_POLLS = 5
 
 # (major, minor) -> phase. Major 0 is "off" for any minor. 3.35 and 3.4 are unverified
 # defaults; every other listed code was seen on a real AIR 2D (2026-11-02).
@@ -164,6 +167,7 @@ class HeaterDriver:
         self._stop_attempts = 0
         self._stop_polls = 0
         self._written: tuple[Settings, str] | None = None  # settings write awaiting its 0x02 read
+        self._polls_since_settings = 0
 
     # --- one cycle ----------------------------------------------------------------
     def poll(self) -> None:
@@ -194,6 +198,10 @@ class HeaterDriver:
             status = self._read_status()
             if status is not None and self._written is not None:
                 self._confirm_settings()
+            elif status is not None:
+                self._polls_since_settings += 1
+                if self._polls_since_settings >= SETTINGS_EVERY_POLLS:
+                    self._read_settings()
             return status
         except OSError as exc:
             logger.warning("Serial error on %s: %s", self._cfg.serial_device, exc)
@@ -265,7 +273,9 @@ class HeaterDriver:
         if phase is None:
             if status.status_code not in self._unknown_codes:
                 self._unknown_codes.add(status.status_code)
-                logger.warning("Unknown status code %s: publishing an empty phase", status.status_code)
+                logger.warning(
+                    "Unknown status code %s: publishing an empty phase", status.status_code
+                )
         return phase
 
     def _publish_live(self) -> None:
@@ -371,7 +381,9 @@ class HeaterDriver:
         if not isinstance(value, bool):
             raise Rejected(f"expected true or false, got {value!r}")
 
-    def _start(self, status: Status, phase: str | None, ventilating: bool, settings: Settings) -> None:
+    def _start(
+        self, status: Status, phase: str | None, ventilating: bool, settings: Settings
+    ) -> None:
         if ventilating or phase == "shutting_down":
             raise Rejected(f"cannot start while {'ventilating' if ventilating else phase}")
         if phase != "off":
@@ -379,6 +391,7 @@ class HeaterDriver:
             return
         if status.error_code != 0:
             raise Rejected(f"heater reports error {status.error_code}")
+        settings = self._fresh_settings()
         self._send_pending(
             lambda: self._send(MSG_START, encode_settings(settings)),
             lambda s, _st: self._phase(s) != "off",
@@ -389,12 +402,26 @@ class HeaterDriver:
         """Fan-only (status 3.35), from off only, at the power level the heater reported."""
         if phase != "off":
             raise Rejected(f"cannot ventilate from phase {phase}")
-        level = settings.power_level
+        level = self._fresh_settings().power_level
         self._send_pending(
             lambda: self._send(MSG_VENTILATE, bytes([0xFF, 0xFF, level, 0xFF])),
-            lambda s, _st: self._phase(s) != "off",
+            self._ventilation_confirmed,
             name="ventilate",
         )
+
+    def _ventilation_confirmed(self, status: Status, _settings: Settings | None) -> bool:
+        """Only fan-only (3.35) confirms. Any other start ends the wait with one ERROR and no retry:
+        the 0x23 frame is unverified, and a frame that lit the burner must not be sent again."""
+        if (status.major, status.minor) == (3, 35):
+            return True
+        if self._phase(status) == "off":
+            return False
+        logger.error(
+            "Ventilate answered with status %s (phase %s), not fan-only 3.35: not retrying",
+            status.status_code,
+            self._phase(status),
+        )
+        return True
 
     def _stop(self) -> None:
         self._stop_pending = True
@@ -409,18 +436,19 @@ class HeaterDriver:
         if suffix == "mode/set":
             if not isinstance(value, str) or value not in CODE_BY_MODE:
                 raise Rejected(f"unknown mode {value!r}")
-            new = Settings(CODE_BY_MODE[value], settings.setpoint_c, settings.power_level)
+            change = {"mode_code": CODE_BY_MODE[value]}
         elif suffix == "setpoint_c/set":
             self._expect_int(value, 1, 30)
-            new = Settings(settings.mode_code, value, settings.power_level)
+            change = {"setpoint_c": value}
         elif suffix == "power_level/set":
             self._expect_int(value, 0, 9)
-            new = Settings(settings.mode_code, settings.setpoint_c, value)
+            change = {"power_level": value}
         else:
             raise Rejected("unknown command topic")
         if ventilating or phase == "shutting_down":
             blocker = "ventilating" if ventilating else phase
             raise Rejected(f"settings cannot change while {blocker}")
+        new = replace(self._fresh_settings(), **change)
         self._stop_pending = False
         self._send(MSG_SETTINGS, encode_settings(new))
         # Confirmed by the next regular poll's 0x02 read, so the heater has time to apply it.
@@ -437,11 +465,23 @@ class HeaterDriver:
     def _send(self, msg: int, payload: bytes = b"") -> None:
         self._ensure_link().transact(msg, payload)
 
-    def _read_settings(self) -> None:
+    def _fresh_settings(self) -> Settings:
+        """The heater's settings read just now. Start, ventilate and settings writes carry the whole
+        payload, so they are never based on a copy older than a change made on the panel."""
+        if not self._read_settings():
+            raise Rejected("heater did not report its settings just now")
+        assert self._settings is not None
+        return self._settings
+
+    def _read_settings(self) -> bool:
+        """Read 0x02 into `_settings`; False (keeping the old copy) when it gave no valid reply."""
+        self._polls_since_settings = 0
         reply = self._ensure_link().transact(MSG_SETTINGS)
         settings = self._parse_settings_reply(reply)
-        if settings is not None:
-            self._settings = settings
+        if settings is None:
+            return False
+        self._settings = settings
+        return True
 
     def _parse_settings_reply(self, reply) -> Settings | None:  # noqa: ANN001 - link Frame or None
         """Parse a 0x02 reply and log its raw bytes: DEBUG always, INFO when they change.

@@ -37,8 +37,14 @@ are unverified. `commands_enabled/set` (`true`/`false`) is the one command accep
 off: it flips the switch for this run only and republishes `commands_enabled`; a restart returns to
 `config.ini`. A rejected or unconfirmed command is logged at WARNING with the command and phase; there is
 no reply topic. Stop is retried at most 3 times, 3 polls apart, then one ERROR, and is never gated
-by phase. Confirmation is the retained field changing (settings: the next `0x02` read). The Driver
-never stops or re-commands the heater on its own, including after a restart.
+by phase. Confirmation is the retained field changing (settings: the next `0x02` read). Ventilation
+is confirmed only by status `3.35`: if the heater answers `0x23` with any other start, one ERROR is
+logged and the frame is not sent again. The Driver never stops or re-commands the heater on its own,
+including after a restart.
+
+Start, ventilate and every settings write read `0x02` fresh first (a failed read rejects the command)
+and send back the whole payload with only the commanded field changed, so the bytes the Driver does
+not understand (`use_work_time`, `work_time`, `wait_mode`) keep what was picked on the panel.
 
 ## Installing
 
@@ -74,7 +80,8 @@ Still unverified; each is blocked or refused until a human-present bench check:
 
 ## Finding the bytes of other modes
 
-The settings reply (`0x02`) is logged raw: `Heater settings changed: <old> -> <new>` at INFO whenever it
+The settings (`0x02`) are re-read every 5 polls, so a change made on the panel is published within
+about 5 s. The reply is logged raw: `Heater settings changed: <old> -> <new>` at INFO whenever it
 differs from the last read, and every payload at DEBUG (`-d`). Pick Thermostat or Heat + ventilation on
 the Comfort Control panel with the heater off and read the changed bytes, in the order `use_work_time,
 work_time, mode, setpoint, wait_mode, power`. The driver only sends mode codes 1, 3 and 4.

@@ -41,6 +41,8 @@ class FakeHeater:
         self.ignore: dict[int, int] = {}  # msg -> number of upcoming frames to swallow
         self.received: list[tuple[int, bytes]] = []
         self.stop_effective = True
+        self.drop_settings_writes = 0  # upcoming 0x02 writes (not reads) to swallow
+        self.ventilate_status: list[int] | None = [3, 35]  # None: the frame changes nothing
         self._parser = FrameParser()
         self._out = bytearray()
 
@@ -49,6 +51,9 @@ class FakeHeater:
         for frame in self._parser.feed(data):
             self.received.append((frame.msg, frame.payload))
             if self.silent:
+                continue
+            if frame.msg == MSG_SETTINGS and frame.payload and self.drop_settings_writes > 0:
+                self.drop_settings_writes -= 1
                 continue
             if self.ignore.get(frame.msg, 0) > 0:
                 self.ignore[frame.msg] -= 1
@@ -93,7 +98,8 @@ class FakeHeater:
                 self.status = [3, 4]
             self._reply(msg)
         elif msg == MSG_VENTILATE:
-            self.status = [3, 35]
+            if self.ventilate_status is not None:
+                self.status = list(self.ventilate_status)
             self._reply(msg, bytes([0xFF, 0xFF, payload[2], 0x43]))
         elif msg == MSG_UNBLOCK:
             self.error = 0

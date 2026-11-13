@@ -203,7 +203,8 @@ def test_unverified_commands_are_refused_with_one_warning(rig, suffix, payload, 
     rig.heater.received.clear()
     rig.command(suffix, payload)
     rig.poll(4)
-    assert {m for m, _ in rig.heater.received} == {MSG_STATUS}  # no frame, 0x0D never sent
+    # Only polls (status, and the periodic settings read): no command frame, 0x0D never sent.
+    assert {(m, p) for m, p in rig.heater.received if m != MSG_STATUS} <= {(MSG_SETTINGS, b"")}
     assert not sent(rig, MSG_UNBLOCK)
     assert len([w for w in warnings() if "refused" in w]) == 1
 
@@ -214,6 +215,42 @@ def test_ventilate_from_off_uses_the_read_power_level(rig):
     rig.poll(2)
     assert sent(rig, MSG_VENTILATE) == [bytes([0xFF, 0xFF, 8, 0xFF])]
     assert rig.value("ventilating") is True
+
+
+def test_a_panel_change_is_read_and_logged_within_a_few_polls(rig, caplog):
+    caplog.set_level("INFO")
+    rig.heater.settings = bytes([1, 0, 1, 16, 1, 8])  # mode and wait_mode changed on the panel
+    rig.poll(5)
+    assert rig.value("mode") == "heater_temperature"
+    assert any(
+        "Heater settings changed: 01 00 04 10 00 08 -> 01 00 01 10 01 08" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_a_settings_command_rejected_when_the_fresh_read_fails(rig, warnings):
+    rig.heater.ignore[MSG_SETTINGS] = 1
+    rig.command("setpoint_c/set", 22)
+    rig.poll()
+    assert [p for p in sent(rig, MSG_SETTINGS) if p] == []
+    assert any("did not report its settings" in w for w in warnings())
+
+
+def test_ventilate_answered_by_a_heating_start_is_logged_and_not_retried(rig, caplog):
+    rig.heater.ventilate_status = [2, 1]
+    rig.command("ventilating/set", True)
+    rig.poll(8)
+    assert len(sent(rig, MSG_VENTILATE)) == 1
+    assert rig.value("ventilating") is None
+    assert sum("not fan-only 3.35" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_ventilate_unanswered_is_retried_once(rig, warnings):
+    rig.heater.ventilate_status = None
+    rig.command("ventilating/set", True)
+    rig.poll(8)
+    assert len(sent(rig, MSG_VENTILATE)) == 2
+    assert any("ventilate unconfirmed" in w for w in warnings())
 
 
 def test_ventilate_rejected_when_not_off(rig, warnings):
@@ -236,10 +273,10 @@ def test_ventilating_false_is_a_stop(rig):
 def test_setpoint_writes_full_settings_and_reads_back(rig):
     rig.command("setpoint_c/set", 22)
     rig.poll()
-    assert sent(rig, MSG_SETTINGS)[1] == bytes([1, 0, 4, 22, 0, 8])
-    assert len(sent(rig, MSG_SETTINGS)) == 2  # no immediate read: the next poll reads it back
+    # connect read, fresh read, then the write; no immediate read-back
+    assert sent(rig, MSG_SETTINGS)[1:] == [b"", bytes([1, 0, 4, 22, 0, 8])]
     rig.poll()
-    assert len(sent(rig, MSG_SETTINGS)) == 3
+    assert len(sent(rig, MSG_SETTINGS)) == 4  # the next poll reads it back
     assert rig.value("setpoint_c") == 22
 
 
@@ -251,6 +288,23 @@ def test_mode_and_power_level_change_one_field_each(rig):
     writes = [p for p in sent(rig, MSG_SETTINGS) if p]
     assert writes[0] == bytes([1, 0, 3, 16, 0, 8]) and writes[1] == bytes([1, 0, 3, 16, 0, 3])
     assert (rig.value("mode"), rig.value("power_level")) == ("external_temperature", 3)
+
+
+def test_settings_write_keeps_the_bytes_set_on_the_panel(rig):
+    rig.heater.settings = bytes([2, 30, 4, 16, 1, 8])  # work time and wait_mode from the panel
+    rig.poll()  # the next poll's 0x02 read picks them up
+    rig.command("setpoint_c/set", 22)
+    rig.poll(2)
+    assert [p for p in sent(rig, MSG_SETTINGS) if p][-1] == bytes([2, 30, 4, 22, 1, 8])
+
+
+def test_start_keeps_the_bytes_set_on_the_panel(make_rig):
+    rig = make_rig()
+    rig.heater.settings = bytes([2, 30, 1, 18, 1, 5])
+    rig.poll()
+    rig.command("set", True)
+    rig.poll()
+    assert sent(rig, MSG_START) == [bytes([2, 30, 1, 18, 1, 5])]
 
 
 @pytest.mark.parametrize("status", [(3, 4), (3, 35)])
@@ -339,11 +393,13 @@ def test_settings_write_mismatch_warns_once_without_retry_or_new_topic(rig, warn
     rig.set_status(3, 0)
     rig.poll()
     topics = set(rig.pub.retained)
-    rig.heater.ignore[MSG_SETTINGS] = 1  # the write is lost; the read-back shows the old value
+    rig.heater.drop_settings_writes = 1  # the write is lost; the read-back shows the old value
     rig.command("setpoint_c/set", 22)
+    rig.poll(3)
+    # connect read, fresh read before the write, the write, one confirming read
+    assert len(sent(rig, MSG_SETTINGS)) == 4
     rig.poll(10)
     assert len([p for p in sent(rig, MSG_SETTINGS) if p]) == 1  # no second attempt
-    assert len(sent(rig, MSG_SETTINGS)) == 3  # connect read, write, one confirming read
     assert rig.value("setpoint_c") == 16  # the read-back is what is published
     assert set(rig.pub.retained) == topics
     unconfirmed = [w for w in warnings() if "unconfirmed" in w]
@@ -389,7 +445,9 @@ def test_a_settings_change_is_logged_with_the_raw_bytes(rig, caplog):
     rig.poll()
     rig.command("power_level/set", 5)
     rig.poll(2)
-    changed = [r.getMessage() for r in caplog.records if "Heater settings changed" in r.getMessage()]
+    changed = [
+        r.getMessage() for r in caplog.records if "Heater settings changed" in r.getMessage()
+    ]
     assert len(changed) == 1 and "->" in changed[0]
     rig.poll(2)
     assert len([r for r in caplog.records if "Heater settings changed" in r.getMessage()]) == 1
