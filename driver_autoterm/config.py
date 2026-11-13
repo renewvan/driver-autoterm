@@ -14,9 +14,15 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from driver_autoterm.protocol import MSG_SETTINGS, MSG_START, MSG_VENTILATE
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.default.ini"
+
+# A clear_error frame may never be one that lights the burner or rewrites the settings: a capture
+# that mis-attributes a start to the panel's "clear" must stop the Driver, not reach the heater.
+_CLEAR_ERROR_FORBIDDEN_MSGS = frozenset({MSG_START, MSG_SETTINGS, MSG_VENTILATE})
 
 
 @dataclass(frozen=True)
@@ -40,6 +46,29 @@ class DeviceConfig:
     commands_enabled: bool
     stale_after_s: float
     send_init: bool
+    # (msg, payload) sent for `clear_error/set`, from a bench capture; None refuses the command.
+    clear_error_frame: tuple[int, bytes] | None = None
+
+
+def parse_clear_error_frame(text: str) -> tuple[int, bytes] | None:
+    """`"0d"` or `"0d 00 01"` (message byte, then payload, in hex) -> (msg, payload); empty -> None.
+
+    Raises ValueError on bad hex or a forbidden message: better a stopped Driver than a guess."""
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        raw = bytes.fromhex(text)
+    except ValueError:
+        raise ValueError(f"clear_error_frame is not hex bytes: {text!r}") from None
+    msg, payload = raw[0], raw[1:]
+    if msg in _CLEAR_ERROR_FORBIDDEN_MSGS:
+        raise ValueError(
+            f"clear_error_frame message 0x{msg:02x} starts the heater or writes its settings"
+        )
+    if len(payload) > 32:
+        raise ValueError(f"clear_error_frame payload is {len(payload)} bytes (at most 32)")
+    return msg, payload
 
 
 @dataclass(frozen=True)
@@ -82,6 +111,7 @@ def load_config(
             commands_enabled=device.getboolean("commands_enabled", False),
             stale_after_s=device.getfloat("stale_after_s", 5.0),
             send_init=device.getboolean("send_init", False),
+            clear_error_frame=parse_clear_error_frame(device.get("clear_error_frame", "")),
         ),
     )
     _validate(config.device)
