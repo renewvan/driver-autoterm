@@ -95,7 +95,7 @@ class FakeHeater:
             self._reply(msg, payload)
         elif msg == MSG_STOP:
             if self.stop_effective and self.status[0] in (1, 2, 3):
-                self.status = [3, 4]
+                self.status = [4, 0]  # as seen on a real AIR 2D: 3.0 -> 4.0 -> 0.1
             self._reply(msg)
         elif msg == MSG_VENTILATE:
             if self.ventilate_status is not None:

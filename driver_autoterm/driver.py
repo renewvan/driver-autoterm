@@ -20,6 +20,8 @@ from driver_autoterm.driver_info import build_info, read_board_serial
 from driver_autoterm.link import HeaterLink, Stream, open_serial
 from driver_autoterm.protocol import (
     CODE_BY_MODE,
+    WAIT_MODE_THERMOSTAT_OFF,
+    WAIT_MODE_THERMOSTAT_ON,
     MSG_INIT,
     MSG_SERIAL,
     MSG_SETTINGS,
@@ -44,6 +46,7 @@ COMMAND_TOPICS = (
     "mode/set",
     "setpoint_c/set",
     "power_level/set",
+    "thermostat/set",
     "ventilating/set",
     "clear_error/set",
     "commands_enabled/set",
@@ -62,6 +65,7 @@ LIVE_FIELDS = (
     "mode",
     "setpoint_c",
     "power_level",
+    "thermostat",
 )
 # Polls without confirmation before the single retry, and again before giving up.
 CONFIRM_POLLS = 3
@@ -72,8 +76,9 @@ STOP_RETRY_POLLS = 3
 # published and logged; every command that writes them also reads them fresh first.
 SETTINGS_EVERY_POLLS = 5
 
-# (major, minor) -> phase. Major 0 is "off" for any minor. 3.35 and 3.4 are unverified
-# defaults; every other listed code was seen on a real AIR 2D (2026-11-02).
+# (major, minor) -> phase. Major 0 is "off" for any minor. 3.35 is an unverified default; every
+# other listed code was seen on a real AIR 2D: the start-run-stop cycle on 2026-11-02, and the
+# Thermostat standby 3.4 (burner off, purging) then 3.5 (waiting to re-ignite) on 2026-11-13.
 PHASES: dict[tuple[int, int], str] = {
     (1, 0): "starting",
     (1, 1): "starting",
@@ -85,7 +90,8 @@ PHASES: dict[tuple[int, int], str] = {
     (2, 4): "warming_up",
     (3, 0): "running",
     (3, 35): "running",  # unverified: fan-only, also published as ventilating
-    (3, 4): "shutting_down",  # unverified
+    (3, 4): "standby",
+    (3, 5): "standby",
     (4, 0): "shutting_down",
 }
 
@@ -166,7 +172,8 @@ class HeaterDriver:
         self._stop_pending = False
         self._stop_attempts = 0
         self._stop_polls = 0
-        self._written: tuple[Settings, str] | None = None  # settings write awaiting its 0x02 read
+        # The fields a settings write changed, awaiting the next 0x02 read.
+        self._written: tuple[dict[str, int], str] | None = None
         self._polls_since_settings = 0
 
     # --- one cycle ----------------------------------------------------------------
@@ -209,12 +216,18 @@ class HeaterDriver:
             return None
 
     def _confirm_settings(self) -> None:
-        """Compare the write with this poll's 0x02 read: one WARNING on mismatch, never a retry."""
+        """Compare the written field with this poll's 0x02 read: one WARNING on mismatch, no retry.
+
+        Only the commanded field counts: the heater rewrites power_level by itself while running in
+        a temperature mode, which is not a failed write."""
         assert self._written is not None and self._status is not None
-        expected, name = self._written
+        change, name = self._written
         self._written = None
-        self._read_settings()
-        if self._settings != expected:
+        if not self._read_settings():
+            self._warn_unconfirmed(name)
+            return
+        assert self._settings is not None
+        if any(getattr(self._settings, k) != v for k, v in change.items()):
             self._warn_unconfirmed(name)
 
     def _ensure_link(self) -> HeaterLink:
@@ -295,12 +308,14 @@ class HeaterDriver:
             "mode": None,
             "setpoint_c": None,
             "power_level": None,
+            "thermostat": None,
         }
         if self._settings is not None:
             st = self._settings
             values["mode"] = st.mode
             values["setpoint_c"] = st.setpoint_c if 1 <= st.setpoint_c <= 30 else None
             values["power_level"] = st.power_level if 0 <= st.power_level <= 9 else None
+            values["thermostat"] = st.thermostat
         for name, value in values.items():
             self._pub.publish(
                 _topic(self._cfg.id, name), "" if value is None else json.dumps(value)
@@ -443,6 +458,9 @@ class HeaterDriver:
         elif suffix == "power_level/set":
             self._expect_int(value, 0, 9)
             change = {"power_level": value}
+        elif suffix == "thermostat/set":
+            self._expect_bool(value)
+            change = {"wait_mode": WAIT_MODE_THERMOSTAT_ON if value else WAIT_MODE_THERMOSTAT_OFF}
         else:
             raise Rejected("unknown command topic")
         if ventilating or phase == "shutting_down":
@@ -452,7 +470,7 @@ class HeaterDriver:
         self._stop_pending = False
         self._send(MSG_SETTINGS, encode_settings(new))
         # Confirmed by the next regular poll's 0x02 read, so the heater has time to apply it.
-        self._written = (new, suffix.removesuffix("/set"))
+        self._written = (change, suffix.removesuffix("/set"))
 
     @staticmethod
     def _expect_int(value: object, low: int, high: int) -> None:

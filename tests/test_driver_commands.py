@@ -105,7 +105,7 @@ def test_start_from_off_uses_last_read_settings_and_is_confirmed(rig):
     assert len(sent(rig, MSG_START)) == 1  # confirmed: no retry
 
 
-@pytest.mark.parametrize("status", [(2, 1), (2, 4), (3, 0)])
+@pytest.mark.parametrize("status", [(2, 1), (2, 4), (3, 0), (3, 4), (3, 5)])
 def test_start_while_already_on_is_a_noop(rig, status):
     rig.set_status(*status)
     rig.poll()
@@ -114,7 +114,7 @@ def test_start_while_already_on_is_a_noop(rig, status):
     assert not sent(rig, MSG_START)
 
 
-@pytest.mark.parametrize("status", [(3, 4), (4, 0), (3, 35)])
+@pytest.mark.parametrize("status", [(4, 0), (3, 35)])
 def test_start_rejected_while_shutting_down_or_ventilating(rig, status, warnings):
     rig.set_status(*status)
     rig.poll()
@@ -184,7 +184,7 @@ def test_stop_that_takes_on_a_retry_stops_retrying(rig):
     assert len(sent(rig, MSG_STOP)) == 2
 
 
-@pytest.mark.parametrize("status", [(1, 0), (2, 1), (2, 4), (4, 0), (0, 1)])
+@pytest.mark.parametrize("status", [(1, 0), (2, 1), (2, 4), (3, 4), (3, 5), (4, 0), (0, 1)])
 def test_stop_is_accepted_in_every_phase(rig, status):
     rig.set_status(*status)
     rig.poll()
@@ -307,7 +307,7 @@ def test_start_keeps_the_bytes_set_on_the_panel(make_rig):
     assert sent(rig, MSG_START) == [bytes([2, 30, 1, 18, 1, 5])]
 
 
-@pytest.mark.parametrize("status", [(3, 4), (3, 35)])
+@pytest.mark.parametrize("status", [(4, 0), (3, 35)])
 def test_settings_refused_while_shutting_down_or_ventilating(rig, status, warnings):
     rig.set_status(*status)
     rig.poll()
@@ -315,6 +315,47 @@ def test_settings_refused_while_shutting_down_or_ventilating(rig, status, warnin
     rig.poll()
     assert [p for p in sent(rig, MSG_SETTINGS) if p] == []  # no write, only the connect read
     assert warnings()
+
+
+@pytest.mark.parametrize("status", [(3, 4), (3, 5)])
+def test_settings_allowed_in_thermostat_standby(rig, status, warnings):
+    """Bench 2026-11-13: in standby the heater took a new setpoint and re-ignited on its own."""
+    rig.set_status(*status)
+    rig.poll()
+    rig.command("setpoint_c/set", 25)
+    rig.poll(2)
+    assert rig.value("phase") == "standby" and rig.value("setpoint_c") == 25
+    assert not warnings()
+
+
+@pytest.mark.parametrize("value,byte", [(True, 1), (False, 2)])
+def test_thermostat_set_writes_only_wait_mode(rig, value, byte):
+    rig.heater.settings = bytes([1, 0, 1, 20, 0, 8])
+    rig.poll()
+    rig.command("thermostat/set", value)
+    rig.poll(2)
+    assert [p for p in sent(rig, MSG_SETTINGS) if p][-1] == bytes([1, 0, 1, 20, byte, 8])
+    assert rig.value("thermostat") is value
+
+
+@pytest.mark.parametrize("wait_mode,published", [(0, None), (1, True), (2, False), (7, None)])
+def test_thermostat_is_read_from_wait_mode(rig, wait_mode, published):
+    rig.heater.settings = bytes([1, 0, 1, 20, wait_mode, 8])
+    rig.poll(5)  # the periodic settings re-read
+    assert rig.value("thermostat") is published
+
+
+def test_heater_rewriting_power_level_while_running_is_not_unconfirmed(rig, warnings):
+    """Bench 2026-11-13: running in a temperature mode the heater reports the level it burns at."""
+    rig.set_status(3, 0)
+    rig.heater.settings = bytes([1, 0, 1, 15, 1, 8])
+    rig.poll()
+    rig.command("setpoint_c/set", 5)
+    rig.poll()
+    rig.heater.settings = bytes([1, 0, 1, 5, 1, 0])  # the heater dropped to standby power 0
+    rig.poll(3)
+    assert rig.value("setpoint_c") == 5
+    assert not any("unconfirmed" in w for w in warnings())
 
 
 def test_settings_allowed_while_running(rig):
@@ -346,6 +387,9 @@ def test_settings_allowed_while_running(rig):
         ("power_level/set", "-1"),
         ("power_level/set", "2.5"),
         ("ventilating/set", "1"),
+        ("thermostat/set", "1"),
+        ("thermostat/set", '"on"'),
+        ("thermostat/set", "null"),
     ],
 )
 def test_malformed_commands_send_no_frame(rig, suffix, payload, warnings):
