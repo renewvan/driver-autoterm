@@ -26,7 +26,10 @@ class Publisher:
     def __init__(self, config: MqttConfig, info: str) -> None:
         self._config = config
         self._info = info
-        self._client = mqtt.Client(client_id=config.client_id, clean_session=False)
+        # A clean session: with a persistent one the broker queues QoS 1 commands while the Driver
+        # is disconnected and replays them at reconnect, so a stale `set true` could start the
+        # heater minutes later (hub ADR 0013, ADR 0021). `_on_connect` resubscribes every time.
+        self._client = mqtt.Client(client_id=config.client_id, clean_session=True)
         if config.username:
             self._client.username_pw_set(config.username, config.password)
         self._client.will_set(HEALTH_TOPIC, payload="offline", qos=1, retain=True)

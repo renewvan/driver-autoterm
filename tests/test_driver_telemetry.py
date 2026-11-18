@@ -78,8 +78,20 @@ def test_phase_mapping(rig, code, phase):
 
 def test_captured_cycle_never_publishes_off_between_start_and_shutdown(rig):
     seen = []
-    for code in [(0, 1), (1, 0), (1, 1), (2, 0), (2, 1), (2, 2), (2, 6), (2, 3),
-                 (2, 4), (3, 0), (4, 0), (0, 1)]:
+    for code in [
+        (0, 1),
+        (1, 0),
+        (1, 1),
+        (2, 0),
+        (2, 1),
+        (2, 2),
+        (2, 6),
+        (2, 3),
+        (2, 4),
+        (3, 0),
+        (4, 0),
+        (0, 1),
+    ]:
         rig.set_status(*code)
         rig.poll()
         seen.append(rig.value("phase"))

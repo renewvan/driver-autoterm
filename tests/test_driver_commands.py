@@ -193,6 +193,45 @@ def test_stop_is_accepted_in_every_phase(rig, status):
     assert len(sent(rig, MSG_STOP)) == 1
 
 
+def test_a_repeated_stop_restarts_attempts_while_a_stop_is_pending(rig):
+    _stuck_stop(rig)
+    rig.poll(1)  # attempt 1 sent; heater ignores it
+    rig.command("set", False)
+    rig.poll(3)  # the repeated stop is accepted and sends again
+    assert len(sent(rig, MSG_STOP)) == 2
+
+
+def test_commands_other_than_stop_are_rejected_while_a_stop_is_pending(rig, warnings):
+    """A settings write must not silently abandon the retries of a stop the heater ignored."""
+    _stuck_stop(rig)
+    rig.poll(1)  # stop sent; heater ignores it
+    rig.command("setpoint_c/set", 22)
+    rig.command("set", True)
+    rig.poll(20)
+    assert [p for p in sent(rig, MSG_SETTINGS) if p] == []  # no settings write frame
+    assert not sent(rig, MSG_START)
+    assert len(sent(rig, MSG_STOP)) == 3  # the retries ran to the end undisturbed
+    assert sum("a stop is in progress" in w for w in warnings()) == 2
+
+
+def test_two_queued_starts_send_one_frame(rig):
+    rig.command("set", True)
+    rig.command("set", True)  # queued behind the first, e.g. a QoS 1 duplicate
+    rig.poll()
+    assert sent(rig, MSG_START) == [bytes([1, 0, 4, 16, 0, 8])]
+    rig.poll()  # the deferred second command now sees the heater starting: ignored
+    assert len(sent(rig, MSG_START)) == 1
+
+
+def test_two_queued_ventilates_send_one_frame(rig, warnings):
+    rig.command("ventilating/set", True)
+    rig.command("ventilating/set", True)
+    rig.poll()
+    assert sent(rig, MSG_VENTILATE) == [bytes([0xFF, 0xFF, 8, 0xFF])]
+    rig.poll()  # deferred: the heater is no longer off, rejected
+    assert len(sent(rig, MSG_VENTILATE)) == 1
+
+
 # --- refused until bench-verified ------------------------------------------------------
 @pytest.mark.parametrize("suffix", ["clear_error/set"])
 @pytest.mark.parametrize("payload", [True, False])

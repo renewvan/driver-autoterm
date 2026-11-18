@@ -1,8 +1,8 @@
 from driver_autoterm.protocol import FrameParser, build_frame, crc16_modbus, parse_status
 
-# F1: the one real AIR 2D capture (status 3.35, fan only), CRC-valid.
+# F1: a CRC-valid AIR 2D status frame for 3.35 (fan only); 3.35 is not yet bench-verified.
 F1 = bytes.fromhex("aa0413000f0323001c7f0084012d08004646000000000062f369")
-# F7: stop request from the upstream README.
+# F7: the stop request this Driver sends (0x03, empty payload), CRC-valid.
 F7_STOP = bytes.fromhex("aa030000035d7c")
 # F12: 4D 10-byte status, must be rejected.
 F12 = bytes.fromhex("aa040a000f00011e187f007c0142003421")

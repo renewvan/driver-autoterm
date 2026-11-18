@@ -1,6 +1,6 @@
 """A fake AIR 2D on the far end of a serial stream, plus an in-memory MQTT publisher.
 
-The heater models only what the research supports: replies echo/report, no NACK
+The heater models only what was seen on a real AIR 2D: replies echo/report, no NACK
 (a frame it dislikes gets no reply), phases change when commands land.
 """
 

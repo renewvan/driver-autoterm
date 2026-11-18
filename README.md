@@ -44,8 +44,12 @@ panel (`docs/bench-clear-error.md`), it sends that frame only from `off` with a 
 instead it logs one ERROR and never resends it; start, settings and ventilate frames are refused at
 load. The `0x0D` unblock is never sent on its own. Every command, stop included, is also rejected
 earlier (WARNING, no frame) when
-`commands_enabled` is false or the state is stale or not yet synced; the `3.35`/`3.4` phase defaults
-are unverified. `commands_enabled/set` (`true`/`false`) is the one command accepted while commands are
+`commands_enabled` is false or the state is stale or not yet synced; while a stop is being
+retried, every command but a repeated stop is rejected (`a stop is in progress`), so a settings
+write can never silently abandon a stop the heater ignored. At most one command sends a frame
+per poll: a command that sent one defers the rest of the queue, in order, to the next poll,
+which reads the heater's answer first — a duplicate delivery can never send a second frame; the
+`3.35`/`3.4` phase defaults are unverified.
 off: it flips the switch for this run only and republishes `commands_enabled`; a restart returns to
 `config.ini`. A rejected or unconfirmed command is logged at WARNING with the command and phase; there is
 no reply topic. Stop is retried at most 3 times, 3 polls apart, then one ERROR, and is never gated
@@ -101,12 +105,19 @@ Still unverified; each is blocked or refused until a human-present bench check:
 - error byte versus displayed code (`0x1E` = 30 is High confidence from the manual, wire equals
   display is Medium);
 - which fan byte is right (11 commanded, 12 measured; `fan_rpm` uses 12);
-- `external_temperature` mode and the probe reading (no probe installed).
+- `external_temperature` mode and the probe reading (no probe installed);
+- **whether `wait_mode` 1 is Thermostat or Heat + ventilation.** The Comfort Control manual (§3.3,
+  06.2021 v1.20) says Thermostat "shuts off the combustion process and ventilation" at the target
+  (default: off at +1 °C, on again after a 2 °C drop), while Heat + ventilation shuts off combustion
+  and "start[s] to ventilate" until 5 °C below the target. In the 2026-11-13 run, `wait_mode` 1 sat in
+  3.5 with `fan_rpm` about 2400 and no fuel: that matches Heat + ventilation, unless the fan byte is
+  wrong (above). Check at the heater: in 3.5, is air still blowing? Then run `wait_mode` 3.
 
 ## Finding the bytes of other modes
 
-Heat + ventilation (Comfort Control panel) was not found: `wait_mode` 2 kept burning, and 3 was
-never tried in a run. Mode 2 (panel sensor) is stored but not exposed: it needs the panel's sensor.
+Heat + ventilation (Comfort Control panel) is not offered: `wait_mode` 2 kept burning (Temperature),
+and 3 was never tried in a run. It may in fact be `wait_mode` 1 (see Unverified assumptions). Mode 2
+(panel sensor) is stored but not exposed: it needs the panel's sensor.
 
 The settings (`0x02`) are re-read every 5 polls, so a change made on the panel is published within
 about 5 s. The reply is logged raw: `Heater settings changed: <old> -> <new>` at INFO whenever it
@@ -118,6 +129,9 @@ A frame the panel sends (not a settings change) is seen with the read-only sniff
 Driver stopped: `python -m driver_autoterm.sniff --seconds 120`. It never writes, prints each frame
 with the clock time, marks every frame that is not a routine poll, and ends with a count per
 distinct frame. `docs/bench-clear-error.md` uses it to capture the panel clearing a fault.
+The step-by-step session for the PU-27 panel (its Ventilation toggle, its By T modes and its run
+time) is [`docs/bench-pu27-settings.md`](docs/bench-pu27-settings.md). The panel and the adapter are
+never connected at the same time, and the panel is swapped only with the heater off.
 
 ## Development
 
