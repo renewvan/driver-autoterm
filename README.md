@@ -40,8 +40,14 @@ a temperature mode that stops the burner above the setpoint instead of only turn
 **not yet bench-verified**. `clear_error/set` is **refused** (one WARNING, no frame sent) until its
 frame is bench-verified, and the `0x0D` unblock is never
 exposed. Every command, stop included, is also rejected earlier (WARNING, no frame) when
-`commands_enabled` is false or the state is stale or not yet synced; the `3.35`/`3.4` phase defaults
-are unverified. `commands_enabled/set` (`true`/`false`) is the one command accepted while commands are
+`commands_enabled` is false or the state is stale or not yet synced; while a stop is being
+retried, every command but a repeated stop is rejected (`a stop is in progress`), so a settings
+write can never silently abandon a stop the heater ignored. At most one command sends a frame
+per poll: a command that sent one defers the rest of the queue, in order, to the next poll,
+which reads the heater's answer first — a duplicate delivery can never send a second frame; the
+`3.35`/`3.4` phase defaults are unverified.
+
+`commands_enabled/set` (`true`/`false`) is the one command accepted while commands are
 off: it flips the switch for this run only and republishes `commands_enabled`; a restart returns to
 `config.ini`. A rejected or unconfirmed command is logged at WARNING with the command and phase; there is
 no reply topic. Stop is retried at most 3 times, 3 polls apart, then one ERROR, and is never gated
