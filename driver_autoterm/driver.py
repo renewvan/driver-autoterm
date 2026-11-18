@@ -141,6 +141,8 @@ class HeaterDriver:
         self._commands_enabled = config.commands_enabled
         self._link: HeaterLink | None = None
         self._commands: queue.Queue[tuple[str, str]] = queue.Queue()
+        # Set by _send during a drain: one frame per poll, the rest of the queue waits.
+        self._sent_in_drain = False
         self._unknown_codes: set[str] = set()
         self._last_settings_raw: bytes | None = None
         self._started_at = clock()
@@ -327,11 +329,18 @@ class HeaterDriver:
 
     # --- commands -------------------------------------------------------------------
     def _drain_commands(self) -> None:
+        self._sent_in_drain = False
+        deferred: list[tuple[str, str]] = []
         while True:
             try:
                 suffix, payload = self._commands.get_nowait()
             except queue.Empty:
-                return
+                break
+            if self._sent_in_drain:
+                # A frame already went out on this poll; later commands must act on the heater's
+                # answer, which the next poll reads first. Kept in order, re-queued below.
+                deferred.append((suffix, payload))
+                continue
             try:
                 self._execute(suffix, payload)
             except Rejected as exc:
@@ -339,6 +348,8 @@ class HeaterDriver:
             except OSError as exc:
                 logger.warning("Serial error handling %s: %s", suffix, exc)
                 self._drop_link()
+        for item in deferred:
+            self._commands.put(item)
 
     def _set_commands_enabled(self, payload: str) -> None:
         """The one command accepted while commands are off, since it is what turns them on."""
@@ -373,6 +384,8 @@ class HeaterDriver:
         settings = self._settings
 
         stopping = suffix in ("set", "ventilating/set") and value is False
+        if self._stop_pending and not stopping:
+            raise Rejected("a stop is in progress")
         if phase is None and not stopping:
             raise Rejected(f"unknown status code {status.status_code}: only stop is accepted")
 
@@ -467,7 +480,6 @@ class HeaterDriver:
             blocker = "ventilating" if ventilating else phase
             raise Rejected(f"settings cannot change while {blocker}")
         new = replace(self._fresh_settings(), **change)
-        self._stop_pending = False
         self._send(MSG_SETTINGS, encode_settings(new))
         # Confirmed by the next regular poll's 0x02 read, so the heater has time to apply it.
         self._written = (change, suffix.removesuffix("/set"))
@@ -481,6 +493,7 @@ class HeaterDriver:
 
     # --- sending, retry and confirmation ----------------------------------------------
     def _send(self, msg: int, payload: bytes = b"") -> None:
+        self._sent_in_drain = True
         self._ensure_link().transact(msg, payload)
 
     def _fresh_settings(self) -> Settings:
@@ -524,7 +537,6 @@ class HeaterDriver:
         confirmed: Callable[[Status, Settings | None], bool],
         name: str = "command",
     ) -> None:
-        self._stop_pending = False
         send()
         self._read_settings()
         assert self._status is not None
