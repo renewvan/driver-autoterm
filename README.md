@@ -37,17 +37,19 @@ Unretained, strict JSON, under `renewvan/heater/<id>/`: `set` (`true` start / `f
 1-30), `power_level/set` (integer 0-9), `thermostat/set` (`true`/`false`: `wait_mode` 1 or 2; Thermostat is
 a temperature mode that stops the burner above the setpoint instead of only turning it down).
 `ventilating/set` (`true` starts fan-only from off at the read power level, `false` stops) is
-**not yet bench-verified**. `clear_error/set` is **refused** (one WARNING, no frame sent) until its
-frame is bench-verified, and the `0x0D` unblock is never
-exposed. Every command, stop included, is also rejected earlier (WARNING, no frame) when
+**not yet bench-verified**. `clear_error/set` (`true` only) is **refused** (one WARNING, no frame
+sent) while `[device] clear_error_frame` is empty, the default. Set to a frame captured from the
+panel (`docs/bench-clear-error.md`), it sends that frame only from `off` with a non-zero
+`error_code`, is confirmed by `error_code` 0, is retried once, and if the heater leaves `off`
+instead it logs one ERROR and never resends it; start, settings and ventilate frames are refused at
+load. The `0x0D` unblock is never sent on its own. Every command, stop included, is also rejected
+earlier (WARNING, no frame) when
 `commands_enabled` is false or the state is stale or not yet synced; while a stop is being
 retried, every command but a repeated stop is rejected (`a stop is in progress`), so a settings
 write can never silently abandon a stop the heater ignored. At most one command sends a frame
 per poll: a command that sent one defers the rest of the queue, in order, to the next poll,
 which reads the heater's answer first — a duplicate delivery can never send a second frame; the
 `3.35`/`3.4` phase defaults are unverified.
-
-`commands_enabled/set` (`true`/`false`) is the one command accepted while commands are
 off: it flips the switch for this run only and republishes `commands_enabled`; a restart returns to
 `config.ini`. A rejected or unconfirmed command is logged at WARNING with the command and phase; there is
 no reply topic. Stop is retried at most 3 times, 3 polls apart, then one ERROR, and is never gated
@@ -93,7 +95,9 @@ Still unverified; each is blocked or refused until a human-present bench check:
 
 - status codes `3.35` (fan-only) and `3.4` (kept as flagged defaults), and the `0x23` ventilate frame
   behind `ventilating/set`, so the first real send needs a human-present bench check;
-- the `0x0D` unblock (never exposed) and the `clear_error` frame (refused);
+- the `0x0D` unblock (never sent on its own) and the `clear_error` frame (refused until
+  `clear_error_frame` is set from a capture; procedure in `docs/bench-clear-error.md`). A remote
+  `0x03` stop from `off` does not clear error 30 (2026-11-13);
 - the 1-30 setpoint bounds;
 - stop from `standby` (3.4/3.5);
 - stop during `1.x`/`2.x` (early stop);
@@ -121,6 +125,10 @@ differs from the last read, and every payload at DEBUG (`-d`). Pick a mode on th
 heater off and read the changed bytes, in the order `use_work_time, work_time, mode, setpoint,
 wait_mode, power`. The driver only sends mode codes 1, 3 and 4.
 
+A frame the panel sends (not a settings change) is seen with the read-only sniffer, run with the
+Driver stopped: `python -m driver_autoterm.sniff --seconds 120`. It never writes, prints each frame
+with the clock time, marks every frame that is not a routine poll, and ends with a count per
+distinct frame. `docs/bench-clear-error.md` uses it to capture the panel clearing a fault.
 The step-by-step session for the PU-27 panel (its Ventilation toggle, its By T modes and its run
 time) is [`docs/bench-pu27-settings.md`](docs/bench-pu27-settings.md). The panel and the adapter are
 never connected at the same time, and the panel is swapped only with the heater off.
