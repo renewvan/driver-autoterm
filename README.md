@@ -1,6 +1,6 @@
 # driver-autoterm
 
-Autoterm AIR 2D diesel heater driver for the renewvan hub (serial UART to MQTT)
+Autoterm AIR 2D diesel heater driver for the Renewvan hub (serial UART to MQTT)
 
 Native MQTT **Driver** for an Autoterm AIR 2D diesel heater. It reads the heater over a
 9600 8N1 UART (`/dev/ttyAUTOTERM`), publishes the `heater` Entity
